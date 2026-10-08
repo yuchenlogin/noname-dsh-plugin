@@ -20,29 +20,35 @@ DeepSeek Harness
 
 内核是**唯一事实来源**，以 git submodule 引入、零改动。TS 层只是适配：工具是薄桥接，UI 嵌入 NoName 自己生成的 HTML。这样 NoName 的 28 轮对抗性审查 + 2 轮暴力测试的成果完整保留。
 
+## 前置条件
+
+- **DeepSeek Harness** 本体（`dsh` CLI；见 [官方文档](https://deepseek-harness.github.io/deepseek-harness/guide/quickstart)）
+- **Node.js ≥ 18** 与 **Python ≥ 3.10**（NoName 内核无外部依赖，标准库即可）
+
 ## 安装
 
 ```bash
 # 克隆（含内核 submodule）
 git clone --recursive https://github.com/yuchenlogin/noname-dsh-plugin.git
 cd noname-dsh-plugin
-npm install && npm run build
-
-# 需要 python3（内核无外部依赖，标准库即可）
-python3 -c "import noname_harness" 2>/dev/null || echo "确保 vendor/noname-harness 在 PYTHONPATH"
+npm install          # prepare 脚本自动运行 npm run build
 
 # 安装进 DSH profile
 dsh plugin --profile web add /path/to/noname-dsh-plugin
 ```
+
+`prepare` 脚本会在安装/打包时自动编译 TypeScript，因此从 GitHub 安装也能直接加载。
 
 ## 配置（DSH 设置卡片）
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `pythonPath` | `python3` | sidecar 解释器 |
-| `dbDir` | `$DSH_HOME/noname` | 账本 db 目录（首次自动 init） |
-| `autoIngest` | `true` | DSH 事件自动写入证据流 |
-| `ingestLevel` | `minimal` | `minimal`（工具结果）/ `verbose`（全部可观察事件） |
+| `dbDir` | `$DSH_HOME/noname`（无 DSH_HOME 时 `~/.dsh/noname`） | 账本 db 目录（首次自动 init，绝不写宿主 CWD 或内核 submodule） |
+| `autoIngest` | `true` | DSH 工具结果自动写入证据流（按真实会话 id 归属，可溯源） |
+| `timeoutMs` | `30000` | sidecar 调用超时（毫秒） |
+
+配置由 `@deepseek-ai/schemastery` 在加载边界校验——非法值响亮报错，不会以 `mkdir("")` 之类的深层失败出现。
 
 ## 提供的工具（模型可见）
 
@@ -53,21 +59,44 @@ dsh plugin --profile web add /path/to/noname-dsh-plugin
 | `noname_search` | 全文检索证据与记忆 |
 | `noname_state` | 查看已批准的法典（项目宪法） |
 | `noname_inbox` | 审核收件箱（审核是签署，不是点按钮） |
-| `noname_taste_add` | 记录自述品味（最高权威） |
+| `noname_taste_add` | 记录**自述品味**（Authored，最高权威，立即激活） |
+| `noname_taste_propose` | 从「眼前一亮的模型时刻」提出**采纳品味**候选（Adopted，人审核） |
+| `noname_taste_review` | 品味生命周期审核（adopt/edit/pause/resume/retire） |
+| `noname_card_queue` | 品味卡复核队列（「这还是现在的我吗」） |
 | `noname_verify` | 校验账本完整性 |
 | `noname_extract` | 从会话事件抽取记忆候选（绝不自我确认） |
 
+品味是双轨的：`taste_add` 是你主动写下的态度；`taste_propose` 是模型从它令你眼前一亮的表现中提出、经你选择后跨项目延续的候选——后者绝不伪装成你的原话。
+
 ## 账本面板
 
-右侧 sidebar 的 **NoName 账本** tab 渲染五视图：审核收件箱 / 状态 / 版本演进 / 因果图 / 时间线。HTML 由 NoName 内核生成（它自己的克制暗色设计、离线单文件），面板用 iframe 嵌入，保真度与 `ledger-html` 完全一致。
+面板按 DSH 真实 sidebar 契约（`ctx.sidebarRightTabs` 静态定义 + keyed slot 正文）注册 `noname-ledger` tab，渲染五视图：审核收件箱 / 状态 / 版本演进 / 因果图 / 时间线。HTML 由 NoName 内核 `ledger-html` 生成（它自己的克制暗色设计、离线单文件），与命令行 `ledger-html` 输出完全一致。
+
+> **诚实标注**：sidebar 的 keyed-slot 正文接线需要在真实 DSH 宿主中验证；当前版本以文档化的静态定义注册，若宿主 sidebar API 有差异，插件会警告并降级为「无面板、工具不受影响」，绝不因面板失败而拖垮整个插件。
+
+## 已知边界（Roadmap）
+
+- **审批门**：NoName 的审批动作（`review`/`grant_approval`）刻意不暴露为模型工具——它们留在内核与人手里（「核心不可谈判」）。DSH 侧的审批 UI 属后续版本。
+- **品味卡图像**：`card-image` 的视觉层在 DSH 面板中的呈现属后续版本。
+- **多 profile 账本**：当前每个 profile 独立账本；跨 profile 共享属后续版本。
 
 ## 开发
 
 ```bash
 npm run build          # 编译 TS → dist/
-npm test               # vitest（17 项，含真内核端到端）
+npm test               # vitest（24 项，含真内核端到端与 ingest 诚实性）
 npm run test:kernel    # NoName 内核 628 测试
 ```
+
+### 升级内核
+
+```bash
+git submodule update --remote vendor/noname-harness
+npm run test:kernel    # 内核回归
+npm test               # 桥接契约回归
+```
+
+桥接层与内核共用同一份 CLI/JSON 契约，因此 submodule 升级只需两步验证。
 
 ## 设计哲学
 

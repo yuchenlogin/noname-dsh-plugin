@@ -8,12 +8,17 @@
     "dist",
     "cordis.patch.yml",
     "vendor/noname-harness/noname_harness",
-    "vendor/noname-harness/pytest.ini"
+    "vendor/noname-harness/pytest.ini",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",
-    "test:kernel": "cd vendor/noname-harness && python3 -m pytest -q"
+    "test:kernel": "cd vendor/noname-harness && python3 -m pytest -q",
+    "prepare": "npm run build",
+    "prepack": "npm run build"
   },
   "keywords": [
     "deepseek-harness",
@@ -31,8 +36,20 @@
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.4",
     "@deepseek-ai/dsh-tools": "^0.0.1-rc.1",
+    "@deepseek-ai/schemastery": "^3.18.4",
     "@types/node": "^20.11.0",
     "typescript": "^5.4.0",
     "vitest": "^1.5.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yuchenlogin/noname-dsh-plugin.git"
+  },
+  "bugs": "https://github.com/yuchenlogin/noname-dsh-plugin/issues",
+  "homepage": "https://github.com/yuchenlogin/noname-dsh-plugin#readme",
+  "author": "yuchen",
+  "engines": {
+    "node": ">=18",
+    "python": ">=3.10"
   }
 }

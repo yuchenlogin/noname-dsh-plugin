@@ -37,7 +37,7 @@ afterEach(async () => {
 });
 
 describe("tool registration", () => {
-  it("registers exactly the eight NoName tools", () => {
+  it("registers exactly the eleven NoName tools", () => {
     const { ctx, tools } = stubCtx();
     registerNonameTools(ctx, resolveConfig({ dbDir: dir }));
     expect(tools.map((t) => t.name).sort()).toEqual([...NONAME_TOOL_NAMES].sort());

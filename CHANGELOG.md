@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.1.1] - 2026-10-08
+
+### Fixes（三方评审驱动：DSH 官方 QA 28/100、GitHub 开发者 52/100、架构 74/100）
+
+本轮修复全部针对「宣称与实现断裂」——对一个把诚实刻进账本哲学的系统，这类问题比 bug 更重。
+
+**加载阻断级（critical）**
+- **inject 缺失即崩**：`apply()` 在真实 Cordis `Context` 下访问未注入的 `ctx.sidebarRightTabs` 直接抛错，整个插件加载失败（stub 测试给了虚假信心）。修复：sidebar 访问收进 `ctx.effect` 内做防御性降级，真实 Cordis 加载冒烟验证通过（apply OK、11 工具注册、kernel ping 成功）。
+- **dbDir 默认值空头支票**：README 承诺 `$DSH_HOME/noname`，实现是 `?? ""`——零配置下每次调用都 `mkdir("")` ENOENT。修复：`resolveConfig` 在单一边界落地真实默认值（`$DSH_HOME/noname` 或 `~/.dsh/noname`），绝不写宿主 CWD 或内核 submodule。
+- **Git 安装路径必坏**：`main` 指向 `dist/` 但无 `prepare`。修复：补 `prepare`/`prepack` 自动 build，git 安装可直接加载。
+
+**协议/理念不符（high）**
+- **sidebar 注册凭空猜 API**：改为按真实契约（静态定义 `sidebarRightTabs.register` + 明确标注 keyed-slot 正文需真机验证），不再假装有 `render()` 全功能。
+- **Config 假 zod**：接真实 `@deepseek-ai/schemastery` schema，加载边界校验，非法值响亮报错。
+- **ingest 丢溯源**：所有事件灌进硬编码 `session "dsh"`，抹掉谱系——改为按真实 DSH 会话 id 归属（`exec.sessionId`）。
+- **ingest 静默丢证据**：catch 后无声——改为 warn + 计数 + 重入队（失败不标记 seen），「绝不影响宿主」但「绝不无痕丢失」。
+- **假 verbose 档**：`minimal`/`verbose` 行为全同——删除该枚举，只保留真实的一档。
+- **品味只铺单轨**：补 `taste_propose`（adopted 轨，模型从「眼前一亮的时刻」发起）、`taste_review`（生命周期）、`card_queue`（复核队列）——双轨与复核链完整。
+- **HTML 只增不减**：`noname-ledger-${Date.now()}.html` 无限堆积——改为固定文件名 + `--overwrite` 覆盖写。
+
+**工程基建（GitHub 开发者视角）**
+- 补 MIT LICENSE（内核 license 兼容性在 README 标注）；package.json 补 repository/bugs/author/homepage/engines；files 补 README/LICENSE/CHANGELOG。
+- 新增 `.github/workflows/test.yml`：2 OS × 2 Node × 2 Python 矩阵，插件测试（真内核）+ 内核 628 测试。
+
+### Design Rationale
+
+- **为什么 sidebar 降级而非硬凑**：真实 keyed-slot + useTabInfo 契约无法在无 DSH 宿主时验证；与其交付一个「画出来的地图」，不如按文档化的静态定义注册并诚实标注待真机验证——界面是地图，但地图不能是画的。
+- **为什么 ingest 失败要 warn 而非静默**：「绝不影响宿主会话」与「绝不无痕丢证据」不矛盾——一个以「证据不丢」为存在理由的系统，丢证据时必须留痕。
+
+### Notes & Caveats
+
+- 测试 17 → 24 全绿（新增 ingest 诚实性 4 项 + 插件加载面 3 项）；真实 Cordis `Context` 加载冒烟通过。
+- 待办：git 历史清洗（首 commit 误含 node_modules，发布前 filter-repo）、推送远端激活 README 链接、sidebar keyed-slot 真机验证。
+
 ## [0.1.0] - 2026-10-08
 
 ### Features
