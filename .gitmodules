@@ -1,0 +1,3 @@
+[submodule "vendor/noname-harness"]
+	path = vendor/noname-harness
+	url = https://github.com/yuchenlogin/NoNameAgentHarness.git

@@ -1,0 +1,38 @@
+{
+  "name": "noname-dsh-plugin",
+  "version": "0.1.0",
+  "description": "NoName Agent Harness as a DeepSeek Harness plugin: context as an asset — append-only evidence, versioned memory, taste as a first-class citizen, audited approvals.",
+  "type": "module",
+  "main": "dist/index.js",
+  "files": [
+    "dist",
+    "cordis.patch.yml",
+    "vendor/noname-harness/noname_harness",
+    "vendor/noname-harness/pytest.ini"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:kernel": "cd vendor/noname-harness && python3 -m pytest -q"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh-plugin",
+    "context-as-asset",
+    "memory",
+    "taste"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.4",
+    "@deepseek-ai/dsh-tools": "^0.0.1-rc.1",
+    "@types/node": "^20.11.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.5.0"
+  }
+}
