@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.1.2] - 2026-10-08
+
+### Fixes（复审驱动：架构 74→90 后的剩余 10 分）
+
+- **ingest 串行化**：并发 ingest 竞争 SQLite 单写者锁（`database is locked`）导致证据丢失 + dedup 测试确定性失败——用 promise 链串行化写入，证据流有序不丢；新增 `drainIngests` 测试钩子消除时序竞态。
+- **截断标记**：ingest 500 字截断现在追加 `… [truncated, full in DSH transcript]`——「压缩可以有损，呈现不能撒谎」，读者知道这是采样（理念诚实的最后 1%）。
+- **inFlight 死代码删除**：`index.ts` 的 AbortController 池从未接线到任何调用——卸载时 abort 一个永远为空的集合是谎言。删除并注释说明（sidecar 调用短生命周期 + 各自 abort 路径已覆盖），宣称的卸载行为与实现一致。
+- **git 历史清洗**：filter-repo 移除首 commit 误提交的 node_modules/dist（.git 21MB → 904KB，1675 个对象清零），开箱体验干净。
+- **分支与 CI 对齐**：master → main，与 workflow 触发器一致。
+- **README**：补 license 章节（落实 CHANGELOG 0.1.1 的宣称）、iframe 表述对齐（渲染方式由宿主决定）。
+
+### Notes & Caveats
+
+- 24 测试全绿（ingest 5/5 稳定）；真实 Cordis Context 加载冒烟通过。
+- 剩余已知边界（诚实标注、非缺陷）：sidebar keyed-slot 正文待真实 DSH 宿主验证、审批门/品味卡图像/多 profile 账本属后续版本。
+
 ## [0.1.1] - 2026-10-08
 
 ### Fixes（三方评审驱动：DSH 官方 QA 28/100、GitHub 开发者 52/100、架构 74/100）

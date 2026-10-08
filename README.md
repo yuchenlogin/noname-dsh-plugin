@@ -70,7 +70,7 @@ dsh plugin --profile web add /path/to/noname-dsh-plugin
 
 ## 账本面板
 
-面板按 DSH 真实 sidebar 契约（`ctx.sidebarRightTabs` 静态定义 + keyed slot 正文）注册 `noname-ledger` tab，渲染五视图：审核收件箱 / 状态 / 版本演进 / 因果图 / 时间线。HTML 由 NoName 内核 `ledger-html` 生成（它自己的克制暗色设计、离线单文件），与命令行 `ledger-html` 输出完全一致。
+面板按 DSH 真实 sidebar 契约（`ctx.sidebarRightTabs` 静态定义 + keyed slot 正文）注册 `noname-ledger` tab，渲染五视图：审核收件箱 / 状态 / 版本演进 / 因果图 / 时间线。HTML 由 NoName 内核 `ledger-html` 生成（它自己的克制暗色设计、离线单文件），与命令行 `ledger-html` 输出完全一致；具体渲染方式（iframe/webview）由 DSH 宿主的 slot 渲染器决定。
 
 > **诚实标注**：sidebar 的 keyed-slot 正文接线需要在真实 DSH 宿主中验证；当前版本以文档化的静态定义注册，若宿主 sidebar API 有差异，插件会警告并降级为「无面板、工具不受影响」，绝不因面板失败而拖垮整个插件。
 
@@ -101,3 +101,7 @@ npm test               # 桥接契约回归
 ## 设计哲学
 
 NoName 的内核不可谈判（沙箱、审批、账本是物理强制，不是模型不做）；插件只是把它带进 DSH 的能力结晶。它不绕过 NoName 的任何保障——证据只增不改，记忆由人批准，品味不伪装成事实。
+
+## 许可
+
+本插件层以 [MIT](LICENSE) 发布。内核 NoName Agent Harness（`vendor/noname-harness` submodule）的许可以其仓库为准——集成与分发时请同时遵守两者的许可条款。

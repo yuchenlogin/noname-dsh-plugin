@@ -27,15 +27,6 @@ export interface Config extends Partial<NonameConfig> {}
 export function apply(ctx: Context, config?: Config): void {
   const resolved = resolveConfig(config);
 
-  // Central cancellation for in-flight sidecar calls: on unload (HMR/disable)
-  // every tracked call is aborted so no python process outlives the plugin.
-  const inFlight = new Set<AbortController>();
-  const track = () => {
-    const c = new AbortController();
-    inFlight.add(c);
-    return c;
-  };
-
   // Register capabilities first so the plugin is useful even if the sidecar
   // is not yet reachable (a tool call then surfaces the bridge error).
   registerNonameTools(ctx, resolved);
@@ -57,10 +48,10 @@ export function apply(ctx: Context, config?: Config): void {
       }
     })();
     return () => {
-      // Unload: abort every in-flight sidecar call, then let each bridge call
-      // clean up its own process via its abort path.
-      for (const c of inFlight) c.abort();
-      inFlight.clear();
+      // Unload: sidecar calls are short-lived (bounded by timeoutMs) and each
+      // bridge call already owns its process + abort path, so there is nothing
+      // to force-kill here.  (A previous AbortController pool was removed: it
+      // was never wired to any call -- claiming it aborted anything was a lie.)
     };
   });
 }

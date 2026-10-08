@@ -79,10 +79,14 @@ export function registerIngestion(ctx: Context, config: NonameConfig): void {
   }
 
   ctx.on("tools/result", (exec: ToolExec, result: ToolResult) => {
-    const text = (result?.content ?? [])
+    const full = (result?.content ?? [])
       .map((b) => (b.type === "text" ? b.text ?? "" : ""))
-      .join("")
-      .slice(0, 500);
+      .join("");
+    // Honest sampling: the ledger stores a bounded excerpt, but the reader must
+    // KNOW it is truncated (NoName: compression may be lossy, presentation may
+    // not lie).  The full output stays in the DSH transcript (the host of record).
+    const truncated = full.length > 500;
+    const text = full.slice(0, 500) + (truncated ? " … [truncated, full in DSH transcript]" : "");
     const session = sessionIdOf(exec);
     // Dedup key: the correlation id when present, else a content fingerprint
     // scoped to the session so identical short outputs in different sessions
