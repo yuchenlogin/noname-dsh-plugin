@@ -115,13 +115,22 @@ npm run test:kernel    # NoName 内核 654 测试（内核快照见 vendor/nonam
 
 ### 升级内核
 
+插件运行时使用 `vendor/noname_harness_pkg/` 的 vendored 快照；`vendor/noname-harness` submodule 是该快照的可追溯来源。改内核时，先把目标 commit fetch 到 submodule，再一键导出快照：
+
 ```bash
-git submodule update --remote vendor/noname-harness
-npm run test:kernel    # 内核回归
-npm test               # 桥接契约回归
+npm run sync:kernel -- --commit main   # fetch 内核远端 main 并同步精确 commit
+# 或指定 SHA：npm run sync:kernel -- --commit <sha>
+npm run test:kernel                   # 内核回归
+npm test                              # 桥接契约回归
+npm run check:kernel                  # 检查 submodule、快照、版本声明是否一致
+
+git add vendor/noname-harness vendor/noname_harness_pkg
+git commit -m "chore: 升级 vendored kernel"
 ```
 
-桥接层与内核共用同一份 CLI/JSON 契约，因此 submodule 升级只需两步验证。
+日常开发在 submodule 当前 HEAD 上迭代时，`npm run sync:kernel` 会导出该精确提交；`--dry-run` 预览而不写文件。CI 会运行 `check:kernel`：快照漂移或版本声明不一致会失败；若内核远端 main 更新但插件有意 pin 旧版，会给出提示而不阻塞。运行时使用的 snapshot 也会做 import smoke test。
+
+桥接层依赖内核的 CLI/JSON 契约，而不是内核 Python 源码结构；两步测试分别验证内核本身和插件桥接。
 
 ## 设计哲学
 

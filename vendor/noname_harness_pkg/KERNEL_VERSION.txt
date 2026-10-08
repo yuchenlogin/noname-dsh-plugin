@@ -1,2 +1,2 @@
-NoNameAgentHarness @ dd34e9228579e79d776a105e1440192d0f41e952
-https://github.com/yuchenlogin/NoNameAgentHarness/tree/dd34e9228579e79d776a105e1440192d0f41e952
+NoNameAgentHarness @ 0cc85bd7192451e0bf4066976d82cef144ba81df
+https://github.com/yuchenlogin/NoNameAgentHarness/tree/0cc85bd7192451e0bf4066976d82cef144ba81df

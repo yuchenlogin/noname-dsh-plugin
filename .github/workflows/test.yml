@@ -24,22 +24,18 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
+      - name: Kernel snapshot check
+        run: npm run check:kernel
       - name: Install
         run: npm ci
       - name: Build
         run: npm run build
       - name: Plugin tests (real kernel, end to end)
         run: npm test
-      # Kernel smoke: the plugin drives the REAL kernel (already covered above
-      # by the plugin suite, which records/extracts/packages against a real
-      # SQLite db).  The kernel's OWN exhaustive suite (628 tests, incl.
-      # platform-sensitive sandbox/filesystem and multi-process approval-gate
-      # race tests) belongs to the kernel repository's own CI, which validates
-      # the platforms it targets -- re-running it here on Linux would test the
-      # kernel's platform matrix, not this plugin's contract.  We assert only
-      # that the kernel imports and answers a real call on every CI platform.
-      - name: Kernel import + ping smoke (contract the plugin depends on)
+      # The plugin drives the vendored snapshot at runtime.  The submodule is
+      # the source used by check:kernel; this smoke test exercises the exact
+      # package that npm users receive.
+      - name: Kernel import + ping smoke (vendored runtime contract)
         run: |
-          cd vendor/noname-harness
-          python -c "import noname_harness; from noname_harness.store import HarnessStore; print('kernel import OK:', noname_harness.__name__)"
+          PYTHONPATH=vendor/noname_harness_pkg python -c "import noname_harness; from noname_harness.store import HarnessStore; print('kernel import OK:', noname_harness.__name__)"
 

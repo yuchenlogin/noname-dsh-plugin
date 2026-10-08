@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.4.1] - 2026-10-08
+
+### Developer workflow
+
+- 新增 `npm run sync:kernel`：从 `vendor/noname-harness` submodule 的精确 commit 导出 `vendor/noname_harness_pkg`，同步 `KERNEL_VERSION.txt`，支持 `--commit <sha|ref>`、`--dry-run`，并在需要提交 gitlink 时给出明确提示。
+- 新增 `npm run check:kernel`：校验 submodule pin、快照内容和版本声明是否一致；快照漂移或手工伪造版本会失败，内核远端 main 领先时给出非阻塞提示。
+- CI 在安装前运行快照检查，并对实际分发的 `vendor/noname_harness_pkg` 做 import smoke test；不再只测试插件并未使用的 submodule 目录。
+- 支持 `NONAME_KERNEL_REPO=/path/to/NoNameAgentHarness` 作为离线开发/本地 checkout 的 fetch 源。
+
+### Tests
+
+- 覆盖快照版本伪造、快照内容篡改、submodule 落后、干净状态、dry-run 约束等场景；插件全套 41 项测试通过。
+
 ## [0.4.0] - 2026-10-08
 
 ### Fixes（真机验收暴露的缺陷，来自"12 工具全量驱动 + 恶意账本"测试）
