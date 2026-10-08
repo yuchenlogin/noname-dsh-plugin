@@ -84,6 +84,13 @@ export function registerIngestion(ctx, config) {
         // not lie).  The full output stays in the DSH transcript (the host of record).
         const truncated = full.length > 500;
         const text = full.slice(0, 500) + (truncated ? " … [truncated, full in DSH transcript]" : "");
+        // A tool that produced nothing carries nothing.  Writing a row anyway would
+        // spend a seq and a sidecar call on an event that can never be recalled --
+        // and the kernel now refuses an empty event outright, so this would surface
+        // as a permanent failed-ingest warning.  Skipping is not silent loss: there
+        // is no content to lose.
+        if (!text.trim())
+            return;
         const session = ingestSessionId(exec);
         // Dedup key: the correlation id when present, else a content fingerprint
         // scoped to the session so identical short outputs in different sessions

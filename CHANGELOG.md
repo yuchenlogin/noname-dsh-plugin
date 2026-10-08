@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.4.0] - 2026-10-08
+
+### Fixes（真机验收暴露的缺陷，来自"12 工具全量驱动 + 恶意账本"测试）
+
+上一轮验收把 12 个工具逐条打穿，并直接驱动插件自己的 `runNoname` 喂进一本被篡改的账本，暴露出 4 个缺陷（3 个在 TS 层，1 个需要内核配合）：
+
+- **[高] `noname_verify` 的 FAILED 分支是死代码**：内核 `verify` 的契约是"打印完整报告 JSON，然后 exit 1"；桥接层对非零退出码一律 reject，于是 `r.ok ? OK : FAILED` 里的 FAILED 分支永远不可达——`noname_verify` 精心构造的「本次用的是哪本账」（`describeLedgerTarget`，正是为修上一轮那次静默回落才加的）恰好在最需要它的时刻被丢弃。新增 `NonameRunOptions.acceptExitCodes`：调用方显式声明"这个退出码仍带有效 stdout"。`noname_verify` 现在报出 FAILED、账本位置、被改动的行 id 与哈希覆盖度；`pingKernel` 也改用它——此前账本损坏会被误报成「kernel unreachable」，怪错了对象。
+- **[中] 报告 "bytes" 实际是 UTF-16 字符数**：`view.html.length` 对满屏中文的账本低估约 6%（实测报 39679，真实 42294 字节）。改为 `Buffer.byteLength(html, "utf8")`。读者无法信任的尺寸比不给尺寸更糟。
+- **[中] `taste_review` 把"新 head id"埋在 JSON 里**：每次审核都会写一条**新的** head 记录并 supersede 旧的——`adopt` 如此，`pause` 也如此。返回原始 JSON 让这件事不可见：调用方采纳 `tst_A` 之后再暂停 `tst_A`，得到的是 "has been superseded"。现在输出首行显式给出 `head=<新 id> supersedes=<旧 id>`，并提示后续用新 id；JSON 仍附在后面。
+- **[低] 空 text 被静默接受**：`noname_record` 把 `{"text": ""}` 原样交给内核，写下一行永远无法被召回的证据。适配层现在直接拒绝并说明原因（内核侧也加了同名守卫，见下）。
+- **`noname_search` 描述补上检索语义**：中文/日文/韩文按子串匹配（多词 AND），其它语言按 token 匹配——模型需要知道"搜不到"和"没有记忆"不是一回事。
+
+### Vendored kernel
+
+- 内核快照推进到 `dd34e92`（NoName Agent Harness 0.34.0，schema v7 → v8），带来三项内核侧修复：
+  - **完整性哈希覆盖溯源**：v1 的 content_hash 只签 `{event_type, payload}`，丢掉 append-only 触发器后改写 `session_id`/`seq`/`occurred_at`/`id` 仍报 `ok: true`——账本卖的就是可溯源，却恰好没签溯源。新增 `hash_version` 与版本化哈希（v2 覆盖整行）；v1 行按 v1 公式继续可验（append-only 不允许重写历史行），未知版本记入 `unverified_*_ids` 而非 `ok`。`verify` 同时返回 `hash_coverage`，如实披露还有多少行只有 payload 级签名。
+  - **中文检索不再静默返回空**：FTS5 unicode61 把无空格的中文整段索引为单个 token，`"账本"` 匹配不到 `项目账本`，用户搜自己刚写下的词得到 `[]`。
+  - **空事件守卫 + LIKE 通配符转义**（`100%` 不再命中全库）。
+- **快照不再包含 `__pycache__`**：上一版 `git add vendor/` 把 31 个 `.pyc` 一起提交了。字节码不进版本库（`.gitignore` 已补），首次 import 会自行重编译。
+
+### Tests
+
+- 新增 5 项针对上述缺陷的回归测试：FAILED 分支可达且报出账本位置、健康账本披露覆盖度、空 text 被拒且不留痕、账本大小等于真实字节数、`taste_review` 首行给出新 head id（并证明旧 id 确实已失效）。
+- 5 项在修复前全部失败，修复后全绿；另有 10 项针对已编译 `dist/` 的交付验收（修复前 8 项失败）。
+- 全套 41 测试通过（真内核 dd34e92，内核 654 测试全绿）。
+
 ## [0.3.0] - 2026-10-08
 
 ### Features（账本粒度：一个工作区一本账）

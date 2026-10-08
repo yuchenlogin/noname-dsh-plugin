@@ -53,6 +53,15 @@ export function registerNonameTools(ctx: Context, config: NonameConfig): void {
       },
       output: { schema: { type: "string" }, render: (_a, v) => text(v) },
       async execute(args, exec) {
+        // Fail in the adapter, before spawning a sidecar: an empty record is
+        // not evidence, and the error should name the caller's mistake rather
+        // than a kernel exit code.  (The kernel enforces the same rule -- this
+        // is the cheap, clear half of the same guarantee.)
+        if (!args.text.trim()) {
+          throw new Error(
+            "noname_record: `text` is empty; an event with no content cannot be recalled or cited",
+          );
+        }
         const opts = optsFor(ctx, config, exec);
         await ensureNonameInit(opts);
         const r = await runNoname<{ id: string }>(
@@ -87,7 +96,8 @@ export function registerNonameTools(ctx: Context, config: NonameConfig): void {
   ctx.tools.register(
     defineTool({
       name: "noname_search",
-      description: "Search the NoName evidence stream and memory (full-text). Use to recall past decisions, findings, or events.",
+      description:
+        "Search the NoName evidence stream and memory (full-text). Use to recall past decisions, findings, or events. Chinese/Japanese/Korean queries match substrings (several terms are ANDed); other queries use token matching, so a Latin substring may need to be a whole word.",
       parameters: { query: { type: "string", required: true, description: "Search query" } },
       output: { schema: { type: "string" }, render: (_a, v) => text(v) },
       async execute(args, exec) {
@@ -186,7 +196,22 @@ export function registerNonameTools(ctx: Context, config: NonameConfig): void {
       async execute(args, exec) {
         const cmd = ["taste-review", "--taste-id", args.taste_id, "--action", args.action, "--reviewer", args.reviewer];
         if (args.reason) cmd.push("--reason", args.reason);
-        return JSON.stringify(await runNoname(cmd, optsFor(ctx, config, exec)));
+        const r = await runNoname<{
+          id: string;
+          status: string;
+          track: string;
+          supersedes_id: string | null;
+        }>(cmd, optsFor(ctx, config, exec));
+        // Every review writes a NEW head record -- records are immutable and the
+        // old one is superseded -- so the id that comes back is not the id that
+        // went in.  Returning raw JSON buried that: adopting tst_A and then
+        // pausing tst_A fails with "has been superseded".  Lead with the head.
+        const superseded = r.supersedes_id ? ` supersedes=${r.supersedes_id}` : "";
+        return (
+          `${args.action}: ${r.track} taste is now ${r.status} — head=${r.id}${superseded}\n` +
+          `Use head=${r.id} for any further review of this record.\n` +
+          JSON.stringify(r)
+        );
       },
     }),
   );
@@ -213,7 +238,11 @@ export function registerNonameTools(ctx: Context, config: NonameConfig): void {
       async execute(_args, exec) {
         const { buildLedgerView } = await import("./ui/ledger-view.js");
         const view = await buildLedgerView(ctx, config, exec);
-        return `ledger written to ${view.htmlPath} (${view.html.length} bytes; open it to view the five views)`;
+        // byteLength, not String#length: the ledger is full of Chinese, so the
+        // UTF-16 unit count understated the file by ~6% while the message said
+        // "bytes".  A size the reader cannot trust is worse than no size.
+        const bytes = Buffer.byteLength(view.html, "utf8");
+        return `ledger written to ${view.htmlPath} (${bytes} bytes; open it to view the five views)`;
       },
     }),
   );
@@ -221,18 +250,63 @@ export function registerNonameTools(ctx: Context, config: NonameConfig): void {
   ctx.tools.register(
     defineTool({
       name: "noname_verify",
-      description: "Verify the integrity of the NoName ledger (append-only evidence has not been corrupted).",
+      description:
+        "Verify the integrity of the NoName ledger: every event and evidence span is re-hashed under the version it was written with. Reports which ledger was checked, how many rows are only payload-signed (legacy v1), and which rows are corrupt.",
       parameters: {},
       output: { schema: { type: "string" }, render: (_a, v) => text(v) },
       async execute(_args, exec) {
         const opts = optsFor(ctx, config, exec);
-        const r = await runNoname<{ ok: boolean }>(["verify"], opts);
+        // acceptExitCodes: the kernel prints the full report to stdout and then
+        // exits 1 when integrity fails.  Rejecting on that code threw the report
+        // away and replaced it with a bare "noname exited 1" bridge error --
+        // losing exactly the "which ledger was this?" line the next statement
+        // exists to produce.
+        const r = await runNoname<{
+          ok: boolean;
+          bad_event_ids?: string[];
+          bad_evidence_ids?: string[];
+          unverified_event_ids?: string[];
+          unverified_evidence_ids?: string[];
+          hash_coverage?: {
+            events?: { v1_payload_only?: number; v2_full_provenance?: number };
+            evidence?: { v1_content_only?: number; v2_full_provenance?: number };
+          };
+        }>(["verify"], { ...opts, acceptExitCodes: [1] });
         // Report WHICH ledger this call used, and why: a silent fallback to
         // the global directory once looked exactly like a working
         // workspace-scoped ledger, and only the number of events gave it away.
         const target = ledgerTarget(ctx, config, sessionIdOf(exec));
-        const status = r.ok ? "ledger integrity OK" : "ledger integrity FAILED";
-        return `${status} — ${describeLedgerTarget(target)}`;
+        const targetLine = describeLedgerTarget(target);
+        const coverage = r.hash_coverage;
+        const coverageLine = coverage
+          ? `coverage: events ${coverage.events?.v2_full_provenance ?? 0} fully signed / ` +
+            `${coverage.events?.v1_payload_only ?? 0} legacy payload-only; ` +
+            `evidence ${coverage.evidence?.v2_full_provenance ?? 0} fully signed / ` +
+            `${coverage.evidence?.v1_content_only ?? 0} legacy content-only`
+          : "";
+        if (r.ok) {
+          return `ledger integrity OK — ${targetLine}${coverageLine ? `\n${coverageLine}` : ""}`;
+        }
+        const corrupt = [
+          ...(r.bad_event_ids ?? []).map((id) => `event ${id}`),
+          ...(r.bad_evidence_ids ?? []).map((id) => `evidence ${id}`),
+        ];
+        const unverified = [
+          ...(r.unverified_event_ids ?? []).map((id) => `event ${id}`),
+          ...(r.unverified_evidence_ids ?? []).map((id) => `evidence ${id}`),
+        ];
+        const detail = [
+          corrupt.length ? `modified (hash mismatch): ${corrupt.join(", ")}` : "",
+          unverified.length ? `unverifiable (unknown hash version): ${unverified.join(", ")}` : "",
+        ]
+          .filter(Boolean)
+          .join("; ");
+        return (
+          `ledger integrity FAILED — ${targetLine}\n` +
+          (detail ? `${detail}\n` : "") +
+          (coverageLine ? `${coverageLine}\n` : "") +
+          "The ledger is append-only; do not edit it in place."
+        );
       },
     }),
   );

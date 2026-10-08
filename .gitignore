@@ -4,3 +4,5 @@ node_modules/
 .noname/
 coverage/
 *.tgz
+__pycache__/
+*.pyc

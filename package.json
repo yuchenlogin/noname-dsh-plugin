@@ -1,6 +1,6 @@
 {
   "name": "noname-dsh-plugin",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "NoName Agent Harness as a DeepSeek Harness plugin: context as an asset — append-only evidence, versioned memory, taste as a first-class citizen, audited approvals.",
   "type": "module",
   "main": "dist/index.js",

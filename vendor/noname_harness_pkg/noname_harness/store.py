@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import math
+import re
 import sqlite3
 import uuid
 from contextlib import contextmanager
@@ -24,7 +25,18 @@ from .models import EvidenceInput, Event, ModelProfile
 from .workspace import git_snapshot
 
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
+
+#: Hash version stamped on newly appended rows.
+#:
+#: v1 hashed only ``{event_type, payload}`` / ``sha256(content)``, so an
+#: attacker who dropped the append-only triggers could rewrite ``session_id``,
+#: ``seq`` or ``artifact_uri`` and still pass ``verify`` -- provenance, the one
+#: thing this ledger sells, was the part left unsigned.
+#: v2 covers the whole append-only row, provenance included.
+HASH_VERSION_LEGACY = 1
+HASH_VERSION_FULL = 2
+
 VALID_LAYERS = {"high", "mid"}
 VALID_REVIEW_ACTIONS = {"accept", "reject", "edit", "defer", "retire"}
 VALID_TASTE_TRACKS = {"authored", "adopted"}
@@ -90,6 +102,99 @@ def _json(value: Any) -> str:
 
 def _hash(value: Any) -> str:
     return hashlib.sha256(_json(value).encode("utf-8")).hexdigest()
+
+
+def _event_hash(version: int, row: Any) -> str | None:
+    """Recompute an event's content hash for one hash version.
+
+    Returns ``None`` for a version this build does not know, which the caller
+    must treat as *unverified* -- never as valid.  A future version that
+    silently verified as "ok" would be exactly the kind of quiet downgrade the
+    ledger exists to prevent.
+    """
+
+    payload = _decode(row["payload_json"])
+    if version == HASH_VERSION_LEGACY:
+        return _hash({"event_type": row["event_type"], "payload": payload})
+    if version == HASH_VERSION_FULL:
+        return _hash(
+            {
+                "id": row["id"],
+                "session_id": row["session_id"],
+                "seq": row["seq"],
+                "event_type": row["event_type"],
+                "payload": payload,
+                "occurred_at": row["occurred_at"],
+            }
+        )
+    return None
+
+
+def _evidence_hash(version: int, row: Any) -> str | None:
+    """Recompute an evidence span's content hash for one hash version."""
+
+    if version == HASH_VERSION_LEGACY:
+        return hashlib.sha256(row["content"].encode("utf-8")).hexdigest()
+    if version == HASH_VERSION_FULL:
+        return _hash(
+            {
+                "id": row["id"],
+                "event_id": row["event_id"],
+                "artifact_uri": row["artifact_uri"],
+                "start_offset": row["start_offset"],
+                "end_offset": row["end_offset"],
+                "content": row["content"],
+            }
+        )
+    return None
+
+
+#: CJK ideographs, kana and hangul.  These scripts do not separate words with
+#: spaces, and FTS5's unicode61 tokenizer therefore indexes a whole clause as a
+#: single token -- so a phrase query for any *part* of that clause matches
+#: nothing.  ``search_events`` routes such queries to substring matching.
+_CJK_PATTERN = re.compile(
+    r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]"
+)
+
+
+def _contains_cjk(value: str) -> bool:
+    return bool(_CJK_PATTERN.search(value))
+
+
+def _like_needle(term: str) -> str:
+    """Build a literal ``%term%`` LIKE pattern.
+
+    Without ESCAPE, a ``%`` or ``_`` typed by the user is a wildcard: searching
+    ``100%`` would return every event.  Escaping makes the pattern mean what the
+    user typed.
+    """
+
+    escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+def _is_informative(payload: Any) -> bool:
+    """True when a payload carries at least one non-blank scalar somewhere.
+
+    An event with no content is not evidence: it cannot be recalled, cited or
+    handed off, it only inflates ``seq``.  ``{}`` and ``{"text": ""}`` are the
+    two shapes that reach this check through the CLI and the DSH bridge.
+    """
+
+    if payload is None:
+        return False
+    if isinstance(payload, str):
+        return bool(payload.strip())
+    if isinstance(payload, bool):
+        return True
+    if isinstance(payload, (int, float)):
+        return True
+    if isinstance(payload, dict):
+        return any(_is_informative(value) for value in payload.values())
+    if isinstance(payload, (list, tuple, set)):
+        return any(_is_informative(value) for value in payload)
+    return True
 
 
 def _decode(value: str) -> Any:
@@ -245,6 +350,7 @@ class HarnessStore:
             payload_json TEXT NOT NULL,
             occurred_at TEXT NOT NULL,
             content_hash TEXT NOT NULL,
+            hash_version INTEGER NOT NULL DEFAULT 2,
             UNIQUE (session_id, seq)
         );
 
@@ -256,6 +362,7 @@ class HarnessStore:
             end_offset INTEGER,
             content TEXT NOT NULL,
             content_hash TEXT NOT NULL,
+            hash_version INTEGER NOT NULL DEFAULT 2,
             created_at TEXT NOT NULL
         );
 
@@ -587,6 +694,36 @@ class HarnessStore:
                     # EXISTS (and is rebuildable), so only the version bump is
                     # durable here.
                     current_version = 7
+                if current_version == 7:
+                    # v8 signs provenance.  hash_version defaults to the legacy
+                    # value here on purpose: every row already in the file was
+                    # hashed under v1, and re-hashing them would mean rewriting
+                    # append-only rows -- forbidden by the ledger's own rule.
+                    # So old rows stay verifiable under v1 (and are reported as
+                    # legacy coverage), while every new row is stamped v2.
+                    event_columns = {
+                        row["name"]
+                        for row in self._connection.execute(
+                            "PRAGMA table_info(session_events)"
+                        )
+                    }
+                    if "hash_version" not in event_columns:
+                        self._connection.execute(
+                            "ALTER TABLE session_events ADD COLUMN hash_version "
+                            "INTEGER NOT NULL DEFAULT 1"
+                        )
+                    evidence_columns = {
+                        row["name"]
+                        for row in self._connection.execute(
+                            "PRAGMA table_info(evidence_spans)"
+                        )
+                    }
+                    if "hash_version" not in evidence_columns:
+                        self._connection.execute(
+                            "ALTER TABLE evidence_spans ADD COLUMN hash_version "
+                            "INTEGER NOT NULL DEFAULT 1"
+                        )
+                    current_version = 8
                 if current_version != SCHEMA_VERSION:  # pragma: no cover - defensive
                     raise RuntimeError(
                         f"Unsupported schema version {current_version}; expected {SCHEMA_VERSION}"
@@ -743,6 +880,16 @@ class HarnessStore:
             raise ValueError("event_type cannot be empty")
         timestamp = occurred_at or _now()
         evidence_items = list(evidence or [])
+        # An event with no payload content and no evidence is not evidence: it
+        # cannot be recalled, cited or handed off -- it only consumes a seq.  The
+        # DSH bridge sends `{"text": ""}` when a tool returns nothing, and the
+        # CLI sends `{}` when --payload is omitted; both used to be accepted in
+        # silence and became permanently invisible ledger rows.
+        if not _is_informative(payload) and not evidence_items:
+            raise ValueError(
+                "refusing to append an empty event: payload carries no content "
+                "and no evidence was supplied"
+            )
         with self._transaction() as connection:
             return self._insert_event(
                 connection,
@@ -778,7 +925,6 @@ class HarnessStore:
 
         timestamp = occurred_at or _now()
         event_id = _id("evt")
-        event_hash = _hash({"event_type": event_type, "payload": payload})
         evidence_texts: list[str] = []
         row = connection.execute(
             "SELECT COALESCE(MAX(seq), 0) + 1 AS next_seq "
@@ -786,11 +932,33 @@ class HarnessStore:
             (session_id,),
         ).fetchone()
         seq = int(row["next_seq"])
+        # The v2 hash covers the whole row, so it can only be computed once the
+        # id and seq are known -- hence after the seq lookup, not before.
+        event_hash = _event_hash(
+            HASH_VERSION_FULL,
+            {
+                "id": event_id,
+                "session_id": session_id,
+                "seq": seq,
+                "event_type": event_type,
+                "payload_json": _json(payload),
+                "occurred_at": timestamp,
+            },
+        )
         connection.execute(
             "INSERT INTO session_events "
-            "(id, session_id, seq, event_type, payload_json, occurred_at, content_hash) "
-            "VALUES(?, ?, ?, ?, ?, ?, ?)",
-            (event_id, session_id, seq, event_type, _json(payload), timestamp, event_hash),
+            "(id, session_id, seq, event_type, payload_json, occurred_at, content_hash, hash_version) "
+            "VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                event_id,
+                session_id,
+                seq,
+                event_type,
+                _json(payload),
+                timestamp,
+                event_hash,
+                HASH_VERSION_FULL,
+            ),
         )
         for item in evidence:
             if item.start_offset is not None and item.start_offset < 0:
@@ -805,18 +973,31 @@ class HarnessStore:
                 raise ValueError("evidence end_offset cannot precede start_offset")
             if item.artifact_uri and item.artifact_uri.startswith("file://"):
                 self.validate_workspace_path(item.artifact_uri[7:])
+            evidence_id = _id("evd")
+            evidence_hash = _evidence_hash(
+                HASH_VERSION_FULL,
+                {
+                    "id": evidence_id,
+                    "event_id": event_id,
+                    "artifact_uri": item.artifact_uri,
+                    "start_offset": item.start_offset,
+                    "end_offset": item.end_offset,
+                    "content": item.content,
+                },
+            )
             connection.execute(
                 "INSERT INTO evidence_spans "
-                "(id, event_id, artifact_uri, start_offset, end_offset, content, content_hash, created_at) "
-                "VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+                "(id, event_id, artifact_uri, start_offset, end_offset, content, content_hash, hash_version, created_at) "
+                "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
-                    _id("evd"),
+                    evidence_id,
                     event_id,
                     item.artifact_uri,
                     item.start_offset,
                     item.end_offset,
                     item.content,
-                    hashlib.sha256(item.content.encode("utf-8")).hexdigest(),
+                    evidence_hash,
+                    HASH_VERSION_FULL,
                     timestamp,
                 ),
             )
@@ -991,14 +1172,31 @@ class HarnessStore:
         session_id: str | None = None,
         limit: int = 20,
     ) -> list[Event]:
-        """Search event payloads and evidence, using FTS5 when available."""
+        """Search event payloads and evidence.
+
+        Two matching semantics, chosen by what the query can mean:
+
+        * CJK / kana / hangul -- substring matching.  FTS5's unicode61 tokenizer
+          indexes a whole unspaced run ("项目账本") as one token, so the phrase
+          query it builds for "账本" matches nothing and the caller reads an
+          empty list as "no memory".  That silent empty was a real trap:
+          searching for a word you had just written returned [].
+        * everything else -- FTS5 phrase matching, falling back to substring when
+          the index is missing or the MATCH expression is malformed.
+
+        Both paths cover exactly the same columns (event_type, payload JSON and
+        every evidence span), and substring results are a superset of the phrase
+        results for these scripts, so routing CJK away from FTS loses no hits.
+        """
 
         if not query.strip():
             raise ValueError("query cannot be empty")
         if limit < 1:
             raise ValueError("limit must be positive")
         rows: list[sqlite3.Row]
-        if self._fts_available:
+        if _contains_cjk(query):
+            rows = self._search_events_substring(query, session_id, limit)
+        elif self._fts_available:
             safe_query = query.replace('"', " ")
             safe_query = f'"{safe_query}"'
             sql = (
@@ -1031,19 +1229,51 @@ class HarnessStore:
             for row in rows
         ]
 
+    #: The columns a substring search reads.  Kept in one place so the
+    #: single-term and multi-term paths can never drift apart.
+    _SUBSTRING_MATCH_SQL = (
+        "(e.event_type LIKE ? ESCAPE '\\' OR e.payload_json LIKE ? ESCAPE '\\' "
+        "OR EXISTS (SELECT 1 FROM evidence_spans s WHERE s.event_id = e.id "
+        "AND (s.content LIKE ? ESCAPE '\\' OR s.artifact_uri LIKE ? ESCAPE '\\')))"
+    )
+
+    def _search_events_substring(
+        self,
+        query: str,
+        session_id: str | None,
+        limit: int,
+    ) -> list[sqlite3.Row]:
+        """Match every whitespace-separated term as a literal substring.
+
+        Terms are ANDed: "账本 粒度" means both must appear, which is what a
+        reader typing two words expects, and is strictly more useful than
+        requiring the two words to be adjacent.
+        """
+
+        terms = [term for term in query.split() if term]
+        if not terms:
+            terms = [query]
+        clauses = " AND ".join(self._SUBSTRING_MATCH_SQL for _ in terms)
+        args: list[Any] = []
+        for term in terms:
+            needle = _like_needle(term)
+            args.extend([needle, needle, needle, needle])
+        sql = f"SELECT e.* FROM session_events e WHERE {clauses}"
+        if session_id is not None:
+            sql += " AND e.session_id = ?"
+            args.append(session_id)
+        sql += " ORDER BY e.occurred_at DESC, e.rowid DESC LIMIT ?"
+        args.append(limit)
+        return self._connection.execute(sql, tuple(args)).fetchall()
+
     def _search_events_like(
         self,
         query: str,
         session_id: str | None,
         limit: int,
     ) -> list[sqlite3.Row]:
-        needle = f"%{query}%"
-        sql = (
-            "SELECT e.* FROM session_events e "
-            "WHERE (e.event_type LIKE ? OR e.payload_json LIKE ? OR EXISTS ("
-            "SELECT 1 FROM evidence_spans s WHERE s.event_id = e.id "
-            "AND (s.content LIKE ? OR s.artifact_uri LIKE ?)))"
-        )
+        needle = _like_needle(query)
+        sql = f"SELECT e.* FROM session_events e WHERE {self._SUBSTRING_MATCH_SQL}"
         args: list[Any] = [needle, needle, needle, needle]
         if session_id is not None:
             sql += " AND e.session_id = ?"
@@ -2147,26 +2377,68 @@ class HarnessStore:
         return package
 
     def verify_integrity(self) -> dict[str, Any]:
-        """Recompute hashes for stored events and evidence."""
+        """Recompute hashes for stored events and evidence.
+
+        Every row is verified under the hash version it was written with.  Two
+        outcomes are deliberately kept apart:
+
+        * ``bad_*_ids``      -- the recomputed hash disagrees: the row was edited.
+        * ``unverified_*_ids`` -- the row claims a hash version this build does
+          not know.  Unknown is NOT valid; a future-versioned row must never
+          read as "ok" on an older binary.
+
+        ``hash_coverage`` reports how many rows are still only *payload*-signed
+        (v1), because those cannot detect a rewritten ``session_id``/``seq``.
+        Saying so is the point: a green checkmark that silently covers less than
+        the reader assumes is worse than no checkmark.
+        """
 
         bad_events: list[str] = []
+        unverified_events: list[str] = []
+        event_versions: dict[str, int] = {}
         for row in self._connection.execute("SELECT * FROM session_events ORDER BY rowid"):
-            expected = _hash(
-                {"event_type": row["event_type"], "payload": _decode(row["payload_json"])}
-            )
-            if expected != row["content_hash"]:
+            version = row["hash_version"]
+            event_versions[str(version)] = event_versions.get(str(version), 0) + 1
+            expected = _event_hash(version, row)
+            if expected is None:
+                unverified_events.append(row["id"])
+            elif expected != row["content_hash"]:
                 bad_events.append(row["id"])
 
         bad_evidence: list[str] = []
+        unverified_evidence: list[str] = []
+        evidence_versions: dict[str, int] = {}
         for row in self._connection.execute("SELECT * FROM evidence_spans ORDER BY rowid"):
-            expected = hashlib.sha256(row["content"].encode("utf-8")).hexdigest()
-            if expected != row["content_hash"]:
+            version = row["hash_version"]
+            evidence_versions[str(version)] = evidence_versions.get(str(version), 0) + 1
+            expected = _evidence_hash(version, row)
+            if expected is None:
+                unverified_evidence.append(row["id"])
+            elif expected != row["content_hash"]:
                 bad_evidence.append(row["id"])
 
         return {
-            "ok": not bad_events and not bad_evidence,
+            "ok": not bad_events and not bad_evidence and not unverified_events and not unverified_evidence,
             "bad_event_ids": bad_events,
             "bad_evidence_ids": bad_evidence,
+            "unverified_event_ids": unverified_events,
+            "unverified_evidence_ids": unverified_evidence,
+            "hash_coverage": {
+                "events": {
+                    "v1_payload_only": event_versions.get(str(HASH_VERSION_LEGACY), 0),
+                    "v2_full_provenance": event_versions.get(str(HASH_VERSION_FULL), 0),
+                    "unknown_versions": sorted(
+                        key for key in event_versions if key not in {"1", "2"}
+                    ),
+                },
+                "evidence": {
+                    "v1_content_only": evidence_versions.get(str(HASH_VERSION_LEGACY), 0),
+                    "v2_full_provenance": evidence_versions.get(str(HASH_VERSION_FULL), 0),
+                    "unknown_versions": sorted(
+                        key for key in evidence_versions if key not in {"1", "2"}
+                    ),
+                },
+            },
         }
 
     def write_bytes_nofollow(

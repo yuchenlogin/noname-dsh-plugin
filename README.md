@@ -15,7 +15,7 @@ DeepSeek Harness
             │ child_process: python -m noname_harness <cmd>（stdout JSON）
             ▼
        NoName 内核（vendor/noname-harness，Python 标准库 + SQLite）
-       ── 证据只增不改、双时序、品味双轨、审批门、沙箱（628 测试全绿）
+       ── 证据只增不改、双时序、品味双轨、审批门、沙箱（654 测试全绿）
 ```
 
 内核是**唯一事实来源**，以 git submodule 引入、零改动。TS 层只是适配：工具是薄桥接，UI 嵌入 NoName 自己生成的 HTML。这样 NoName 的 28 轮对抗性审查 + 2 轮暴力测试的成果完整保留。
@@ -82,10 +82,14 @@ DSH 工作区（项目）
 | `noname_taste_review` | 品味生命周期审核（adopt/edit/pause/resume/retire） |
 | `noname_card_queue` | 品味卡复核队列（「这还是现在的我吗」） |
 | `noname_ledger` | 渲染账本五视图为 HTML 并返回路径（真机可达的账本形态） |
-| `noname_verify` | 校验账本完整性 |
+| `noname_verify` | 校验账本完整性，并报出用的是哪本账、多少行只有 payload 级签名（v1 遗留） |
 | `noname_extract` | 从会话事件抽取记忆候选（绝不自我确认） |
 
 品味是双轨的：`taste_add` 是你主动写下的态度；`taste_propose` 是模型从它令你眼前一亮的表现中提出、经你选择后跨项目延续的候选——后者绝不伪装成你的原话。
+
+**审核会写新的 head**：`noname_taste_review` 的每个动作（含 `pause`/`resume`）都产生一条新记录并 supersede 旧记录，因此返回的 id 与你传入的 id 不同。工具输出首行会明确给出 `head=<新 id>`，请用它做后续操作——沿用旧 id 会得到 `has been superseded`。
+
+**完整性校验的诚实边界**：`noname_verify` 按每行写入时的哈希版本校验。v8 之后写入的行签名覆盖整行（含 `session_id`/`seq`/`occurred_at`）；更早的行是 v1，只签 `{event_type, payload}`——它们**无法**发现溯源字段被改写，这是 append-only 不允许重写历史行的必然结果。`verify` 的 `hash_coverage` 会如实报出这个比例，不会让一个覆盖率低于你假设的绿勾蒙混过去。
 
 ## 账本访问（真机验证后的形态）
 
@@ -105,8 +109,8 @@ DSH 工作区（项目）
 
 ```bash
 npm run build          # 编译 TS → dist/
-npm test               # vitest（24 项，含真内核端到端与 ingest 诚实性）
-npm run test:kernel    # NoName 内核 628 测试
+npm test               # vitest（41 项，含真内核端到端、ingest 诚实性与验收回归）
+npm run test:kernel    # NoName 内核 654 测试（内核快照见 vendor/noname_harness_pkg/KERNEL_VERSION.txt）
 ```
 
 ### 升级内核

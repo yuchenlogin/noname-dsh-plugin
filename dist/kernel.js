@@ -131,7 +131,8 @@ export async function runNoname(args, opts) {
             settled = true;
             clearTimeout(timer);
             opts.signal?.removeEventListener("abort", onAbort);
-            if (code !== 0) {
+            const tolerated = opts.acceptExitCodes?.includes(code ?? -1) ?? false;
+            if (code !== 0 && !tolerated) {
                 rejectPromise(new NonameBridgeError(`noname exited ${code}: ${stderr.trim() || stdout.trim()}`.slice(0, 500), "nonzero_exit", stderr, code));
                 return;
             }
@@ -165,12 +166,22 @@ export async function ensureNonameInit(opts) {
     await runNoname(["init", "--root", opts.root ?? opts.dbDir, "--name", opts.name ?? "DeepSeek Harness"], opts);
     return { created };
 }
-/** Verify the kernel is importable and the bridge works end to end. */
+/**
+ * Verify the kernel is importable and the bridge works end to end.
+ *
+ * The question this answers is "did the sidecar answer?", not "is the ledger
+ * healthy?".  Exit code 1 is accepted because `verify` uses it to report a
+ * corrupt ledger *after* printing a perfectly valid report: treating that as
+ * "kernel unreachable" (the old behaviour) blamed the wrong thing.
+ */
 export async function pingKernel(opts) {
     try {
         await ensureNonameInit(opts);
-        const result = await runNoname(["verify"], opts);
-        return result.ok === true;
+        const result = await runNoname(["verify"], {
+            ...opts,
+            acceptExitCodes: [1],
+        });
+        return typeof result.ok === "boolean";
     }
     catch {
         return false;
