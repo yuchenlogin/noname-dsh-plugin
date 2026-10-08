@@ -7,6 +7,7 @@
   "files": [
     "dist",
     "cordis.patch.yml",
+    "vendor/noname_harness_pkg",
     "vendor/noname-harness/noname_harness",
     "vendor/noname-harness/pytest.ini",
     "README.md",

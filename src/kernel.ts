@@ -15,8 +15,26 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-// src/ -> plugin root -> vendor/noname-harness
-const KERNEL_ROOT = resolve(HERE, "..", "vendor", "noname-harness");
+// Kernel resolution: prefer the vendored snapshot (self-contained, present in
+// git-installed / npm-packed distributions), fall back to the git submodule
+// (development checkout).  dist/ is one level deeper than src/, so resolve
+// against both the dist and src layouts.
+function resolveKernelRoot(): string {
+  const candidates = [
+    resolve(HERE, "..", "vendor", "noname_harness_pkg"), // dist/ -> vendored snapshot
+    resolve(HERE, "..", "vendor", "noname-harness"), // dist/ -> submodule (dev)
+    resolve(HERE, "vendor", "noname_harness_pkg"), // src/ layouts
+    resolve(HERE, "vendor", "noname-harness"),
+  ];
+  for (const c of candidates) {
+    // A valid root contains the importable noname_harness package.
+    if (existsSync(join(c, "noname_harness", "__init__.py"))) {
+      return c;
+    }
+  }
+  return candidates[0];
+}
+const KERNEL_ROOT = resolveKernelRoot();
 
 export interface NonameRunOptions {
   /** Override the db path (defaults to <dbDir>/harness.db). */
