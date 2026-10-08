@@ -74,6 +74,28 @@ describe("ingestion", () => {
     expect(String(warn.mock.calls[0][0])).toContain("failed to ingest evidence");
   });
 
+  it("marks truncated evidence honestly (>500 chars gets a marker, shorter does not)", async () => {
+    const { ctx, handlers } = stubCtx();
+    registerIngestion(ctx, resolveConfig({ dbDir: dir }));
+    handlers["tools/result"](
+      { name: "bash", callId: "long", sessionId: "s1" },
+      { content: [{ type: "text", text: "x".repeat(800) }] },
+    );
+    handlers["tools/result"](
+      { name: "bash", callId: "short", sessionId: "s1" },
+      { content: [{ type: "text", text: "short" }] },
+    );
+    await drainIngests();
+    const events = await runNoname<{ payload: { text: string } }[]>(["ledger"], { dbDir: dir });
+    const texts = events.map((e) => JSON.stringify(e.payload));
+    const longOne = texts.find((t) => t.includes("truncated"));
+    const shortOne = texts.find((t) => t.includes("short"));
+    expect(longOne).toBeDefined();
+    expect(longOne).toContain("full in DSH transcript");
+    expect(shortOne).toBeDefined();
+    expect(shortOne).not.toContain("truncated");
+  });
+
   it("respects autoIngest=false (no listener registered)", () => {
     const { ctx, handlers } = stubCtx();
     registerIngestion(ctx, resolveConfig({ dbDir: dir, autoIngest: false }));

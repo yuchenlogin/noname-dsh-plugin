@@ -9,9 +9,9 @@
 ```
 DeepSeek Harness
   └─ noname-dsh-plugin (TypeScript, Cordis)
-       ├─ 工具层    ctx.tools.register ── 8 个模型可见工具
+       ├─ 工具层    ctx.tools.register ── 11 个模型可见工具
        ├─ 事件观察  ctx.on('tools/result') ── DSH 事件自动入账
-       └─ UI 面板   右侧 sidebar ── 账本五视图（iframe 嵌入）
+       └─ UI 面板   右侧 sidebar ── 账本五视图（HTML 由内核生成，渲染方式随宿主）
             │ child_process: python -m noname_harness <cmd>（stdout JSON）
             ▼
        NoName 内核（vendor/noname-harness，Python 标准库 + SQLite）
