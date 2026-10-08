@@ -46,6 +46,11 @@ export function registerIngestion(ctx: Context, config: NonameConfig): void {
   const SEEN_CAP = 4096;
   let failedIngests = 0;
 
+  // Serialize writes: SQLite allows one writer at a time, so concurrent
+  // ingests would otherwise race into "database is locked".  A promise chain
+  // keeps the evidence stream ordered and loss-free under bursts.
+  let queue: Promise<void> = Promise.resolve();
+
   async function ingest(eventType: string, session: string, key: string, summary: string): Promise<void> {
     if (seen.has(key)) return;
     seen.add(key);
@@ -83,6 +88,24 @@ export function registerIngestion(ctx: Context, config: NonameConfig): void {
     // scoped to the session so identical short outputs in different sessions
     // do not collide (and identical ones in the same session do).
     const key = exec?.callId ?? `${session}:${exec?.name}:${text.slice(0, 64)}`;
-    void ingest("dsh.tool.completed", session, key, `tool ${exec?.name ?? "?"} -> ${text}`);
+    queue = queue.then(() =>
+      ingest("dsh.tool.completed", session, key, `tool ${exec?.name ?? "?"} -> ${text}`),
+    );
+    const p = queue;
+    pending.add(p);
+    void p.finally(() => pending.delete(p));
   });
+
+  /** Test/debug hook: wait for all in-flight ingests to settle. */
+  async function drain(): Promise<void> {
+    await Promise.all([...pending]);
+  }
+  (registerIngestion as unknown as { __drain?: () => Promise<void> }).__drain = drain;
+}
+
+const pending = new Set<Promise<void>>();
+
+/** Wait for every in-flight ingest to settle (used by tests). */
+export async function drainIngests(): Promise<void> {
+  await Promise.all([...pending]);
 }

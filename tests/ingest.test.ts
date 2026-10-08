@@ -7,7 +7,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { registerIngestion } from "../src/ingest.js";
+import { registerIngestion, drainIngests } from "../src/ingest.js";
 import { resolveConfig } from "../src/config.js";
 import { runNoname } from "../src/kernel.js";
 
@@ -42,7 +42,7 @@ describe("ingestion", () => {
       { name: "bash", callId: "c1", sessionId: "session-alpha" },
       { content: [{ type: "text", text: "did the thing alpha-unique" }] },
     );
-    await wait(600);
+    await drainIngests();
     const events = await runNoname<{ session_id: string }[]>(["ledger"], { dbDir: dir });
     const sessions = new Set(events.map((e) => e.session_id));
     expect(sessions.has("session-alpha")).toBe(true);
@@ -56,7 +56,7 @@ describe("ingestion", () => {
     handlers["tools/result"]({ name: "bash", callId: "dup", sessionId: "s1" }, payload);
     handlers["tools/result"]({ name: "bash", callId: "dup", sessionId: "s1" }, payload); // same callId -> dedup
     handlers["tools/result"]({ name: "bash", callId: "other", sessionId: "s2" }, payload); // diff session -> kept
-    await wait(800);
+    await drainIngests();
     const events = await runNoname<{ session_id: string }[]>(["ledger"], { dbDir: dir });
     const s1 = events.filter((e) => e.session_id === "s1").length;
     const s2 = events.filter((e) => e.session_id === "s2").length;
@@ -69,7 +69,7 @@ describe("ingestion", () => {
     const { ctx, handlers } = stubCtx();
     registerIngestion(ctx, resolveConfig({ dbDir: dir, pythonPath: "missing-python-xyz" }));
     handlers["tools/result"]({ name: "bash", callId: "c9", sessionId: "s1" }, { content: [{ type: "text", text: "x" }] });
-    await wait(400);
+    await new Promise((r) => setTimeout(r, 300));
     expect(warn).toHaveBeenCalled();
     expect(String(warn.mock.calls[0][0])).toContain("failed to ingest evidence");
   });
