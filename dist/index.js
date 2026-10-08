@@ -15,6 +15,7 @@ import { registerNonameTools } from "./tools.js";
 import { registerIngestion } from "./ingest.js";
 import { registerLedgerTab } from "./ui/ledger-tab.js";
 import { pingKernel } from "./kernel.js";
+import { ledgerTarget } from "./workspace.js";
 export const name = "noname-harness";
 // Declared dependencies: Cordis readies `tools` before apply; the sidebar
 // registry is optional (accessed defensively inside an effect, not injected,
@@ -29,15 +30,24 @@ export function apply(ctx, config) {
     registerLedgerTab(ctx, resolved);
     // Detect the kernel at load and guide setup if missing.  A failed ping is
     // a warning, not fatal: the user may still be installing the submodule.
+    // The ping has no session, so it resolves the target without one (the only
+    // workspace, else the legacy directory) -- it never decides where evidence
+    // goes, it only reports whether the sidecar answers.
     ctx.effect(() => {
         void (async () => {
-            const ok = await pingKernel(resolved);
+            const target = ledgerTarget(ctx, resolved);
+            const ok = await pingKernel({
+                dbDir: target.dbDir,
+                root: target.root,
+                pythonPath: resolved.pythonPath,
+                timeoutMs: resolved.timeoutMs,
+            });
             if (!ok) {
                 console.warn("[noname-harness] kernel not reachable. Ensure python3 is installed " +
                     "and vendor/noname-harness is present (git submodule update --init).");
             }
             else {
-                console.log("[noname-harness] kernel ready: context is an asset.");
+                console.log(`[noname-harness] kernel ready (ledger: ${target.dbDir}): context is an asset.`);
             }
         })();
         return () => {

@@ -83,6 +83,21 @@ describe("ensureNonameInit", () => {
     expect(first.created).toBe(true);
     expect(second.created).toBe(false);
   });
+
+  it("initializes a db file that another command created empty", async () => {
+    // `verify` (and any other read) opens -- and therefore creates -- the db
+    // file without initializing the project.  Treating "file exists" as
+    // "initialized" made the next record/package/extract fail with
+    // "project is not initialized"; init must run anyway.
+    await runNoname(["verify"], opts);
+    const res = await ensureNonameInit(opts);
+    expect(res.created).toBe(false);
+    const evt = await runNoname<{ id: string }>(
+      ["event", "--session", "s-empty-db", "--type", "finding", "--payload", '{"text":"survives"}'],
+      opts,
+    );
+    expect(evt.id).toMatch(/^evt_/);
+  });
 });
 
 describe("pingKernel", () => {

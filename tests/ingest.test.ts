@@ -49,6 +49,22 @@ describe("ingestion", () => {
     expect(sessions.has("dsh")).toBe(false);
   });
 
+  it("reads the session id from agent.sessionId (the real-host exec shape)", async () => {
+    // DSH 0.2.0-rc.2 `ToolExecution` has no top-level sessionId: the id lives
+    // on exec.agent.  Trusting only `sessionId` put every real-host event into
+    // the shared `dsh-unknown` bucket while the tests kept passing.
+    const { ctx, handlers } = stubCtx();
+    registerIngestion(ctx, resolveConfig({ dbDir: dir }));
+    handlers["tools/result"](
+      { name: "noname_verify", callId: "c-agent", agent: { sessionId: "session-real-host" } },
+      { content: [{ type: "text", text: "ledger integrity OK" }] },
+    );
+    await drainIngests();
+    const events = await runNoname<{ session_id: string }[]>(["ledger"], { dbDir: dir });
+    expect(events.map((e) => e.session_id)).toContain("session-real-host");
+    expect(events.some((e) => e.session_id === "dsh-unknown")).toBe(false);
+  });
+
   it("dedups the same callId but not the same content in different sessions", async () => {
     const { ctx, handlers } = stubCtx();
     registerIngestion(ctx, resolveConfig({ dbDir: dir }));

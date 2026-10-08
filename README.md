@@ -43,12 +43,30 @@ dsh plugin --profile web add /path/to/noname-dsh-plugin
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| `pythonPath` | `python3` | sidecar 解释器 |
-| `dbDir` | `$DSH_HOME/noname`（无 DSH_HOME 时 `~/.dsh/noname`） | 账本 db 目录（首次自动 init，绝不写宿主 CWD 或内核 submodule） |
+| `pythonPath` | `python3` | sidecar 解释器（建议填绝对路径：DSH 自带的 Python 3.12） |
+| `dbDir` | 空 = 按工作区作用域 | 留空时账本跟随会话所属的 DSH 工作区：`<项目>/.noname`；填了则固定用该目录 |
 | `autoIngest` | `true` | DSH 工具结果自动写入证据流（按真实会话 id 归属，可溯源） |
 | `timeoutMs` | `30000` | sidecar 调用超时（毫秒） |
 
 配置由 `@deepseek-ai/schemastery` 在加载边界校验——非法值响亮报错，不会以 `mkdir("")` 之类的深层失败出现。
+
+## 账本粒度：一个工作区一本账
+
+粒度是**工作区（项目）**，不是会话，也不是全局：
+
+```
+DSH 工作区（项目）
+  ├─ 会话 A ─┐
+  ├─ 会话 B ─┼─→ <项目>/.noname/harness.db   同一本账，按 session_id 区分归属
+  └─ 会话 C ─┘
+另一个项目 ──────→ <那个项目>/.noname/harness.db   完全隔离
+```
+
+- 会话 → 工作区的映射直接读 DSH 自己的 `ctx.workspaceRegistry`（`workspace.path` / `workspace.sessionIds`），不另造一套分组。
+- `<项目>/.noname/` 就是内核 quickstart 的约定（`init --db .noname/harness.db --root .`）：账本随项目走，且内核的 workspace boundary 指向真实项目根——所以 `snapshot` 记录的是你项目的 git 状态，接续包里的边界行也是真项目路径。
+- 账本 HTML 同样落在 `<项目>/.noname/noname-ledger.html`（内核强制生成物必须在项目边界内）。
+- 解析不到工作区时（例如没有工作区服务的 headless 组合）**不猜**：回落到旧的 `$DSH_HOME/noname`，绝不把一个项目的证据写进另一个项目的账本。
+- 建议把 `.noname/` 写进 `.gitignore`（本仓库与 NoName 内核仓库都已这么做）。
 
 ## 提供的工具（模型可见）
 

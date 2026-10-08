@@ -44,12 +44,14 @@ describe("plugin surface", () => {
     expect(tools.registered.map((t) => t.name).sort()).toEqual([...NONAME_TOOL_NAMES].sort());
   });
 
-  it("resolveConfig applies a real dbDir default (never empty)", () => {
+  it("resolveConfig keeps an explicit dbDir, and leaves the default empty (workspace-scoped)", () => {
     const c = resolveConfig({ dbDir: dir });
     expect(c.dbDir).toBe(dir);
+    // An empty dbDir is the *signal* for per-workspace resolution: it is
+    // decided per call from the session's workspace, so it cannot be baked in
+    // here.  ledgerTarget() is what turns it into a real directory.
     const d = resolveConfig();
-    expect(d.dbDir.length).toBeGreaterThan(0);
-    expect(d.dbDir).toContain("noname");
+    expect(d.dbDir).toBe("");
     expect(d.autoIngest).toBe(true);
     expect(d.timeoutMs).toBe(30_000);
   });

@@ -18,6 +18,7 @@
 import type { Context } from "@deepseek-ai/cordis";
 import { ensureNonameInit, runNoname } from "./kernel.js";
 import type { NonameConfig } from "./config.js";
+import { ledgerTarget, sessionIdOf } from "./workspace.js";
 
 /** Shape of the tool-result event payload we rely on (minimal, defensive). */
 interface ToolExec {
@@ -25,14 +26,25 @@ interface ToolExec {
   callId?: string;
   sessionId?: string;
   session?: { id?: string };
+  /** REAL-HOST SHAPE: `tools/result` carries the agent, not a sessionId. */
+  agent?: unknown;
 }
 interface ToolResult {
   content?: { type: string; text?: string }[];
 }
 
-/** Extract the real DSH session id from the exec context, best-effort. */
-function sessionIdOf(exec: ToolExec): string {
-  return exec.sessionId ?? exec.session?.id ?? "dsh-unknown";
+/**
+ * The session id for one ingested event.
+ *
+ * REAL-HOST FINDING (DSH 0.2.0-rc.2): `ToolExecution` carries
+ * `name`/`callId`/`agent` and no top-level `sessionId`, so an
+ * `sessionId ?? session.id` probe silently fell through to the shared
+ * `dsh-unknown` bucket -- exactly the provenance loss this module forbids.
+ * The id lives on `exec.agent.sessionId`; workspace.ts reads every known
+ * shape.  `dsh-unknown` stays as the honest, visible last resort.
+ */
+function ingestSessionId(exec: ToolExec): string {
+  return sessionIdOf(exec) ?? "dsh-unknown";
 }
 
 export function registerIngestion(ctx: Context, config: NonameConfig): void {
@@ -59,7 +71,16 @@ export function registerIngestion(ctx: Context, config: NonameConfig): void {
       seen.delete(first);
     }
     try {
-      const opts = { dbDir: config.dbDir, pythonPath: config.pythonPath, timeoutMs: config.timeoutMs };
+      // Scope the write to the session's workspace: evidence from two
+      // projects must never land in one ledger just because one host process
+      // served both.
+      const target = ledgerTarget(ctx, config, session);
+      const opts = {
+        dbDir: target.dbDir,
+        root: target.root,
+        pythonPath: config.pythonPath,
+        timeoutMs: config.timeoutMs,
+      };
       await ensureNonameInit(opts);
       await runNoname(
         ["event", "--session", session, "--type", eventType, "--payload", JSON.stringify({ text: summary })],
@@ -87,7 +108,7 @@ export function registerIngestion(ctx: Context, config: NonameConfig): void {
     // not lie).  The full output stays in the DSH transcript (the host of record).
     const truncated = full.length > 500;
     const text = full.slice(0, 500) + (truncated ? " … [truncated, full in DSH transcript]" : "");
-    const session = sessionIdOf(exec);
+    const session = ingestSessionId(exec);
     // Dedup key: the correlation id when present, else a content fingerprint
     // scoped to the session so identical short outputs in different sessions
     // do not collide (and identical ones in the same session do).

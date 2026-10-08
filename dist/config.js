@@ -4,13 +4,16 @@
  * (schemastery ValidationError), never as a `mkdir("")` deep in the bridge.
  *
  * Defaults are chosen so a first install works with zero configuration given
- * a system python3; `dbDir` falls back to a per-user home location so the
- * ledger never lands in the host's CWD or the kernel submodule.
+ * a system python3.  `dbDir` is an OPTIONAL override: left empty, the ledger
+ * is scoped to the DSH workspace (project) the call belongs to -- see
+ * workspace.ts -- so one project's evidence never mixes with another's.
  */
 import { homedir } from "node:os";
 import { join } from "node:path";
 import z from "@deepseek-ai/schemastery";
-/** Default ledger location: per-user, never the host CWD or the submodule. */
+/** Ledger directory inside a project, matching the kernel's own quickstart. */
+export const ledgerDirName = ".noname";
+/** Legacy per-user ledger location: used only when no workspace resolves. */
 export function defaultDbDir() {
     return process.env.DSH_HOME
         ? join(process.env.DSH_HOME, "noname")
@@ -24,13 +27,14 @@ export const Config = z.object({
 });
 /**
  * Resolve raw (partial, possibly empty) config into a validated, complete
- * NonameConfig.  An empty dbDir is replaced by the per-user default here --
- * at the single boundary -- so downstream never sees `""`.
+ * NonameConfig.  An empty `dbDir` stays empty on purpose: it is the signal
+ * for workspace-scoped resolution, which needs the call's session and cannot
+ * be decided at load time.
  */
 export function resolveConfig(partial) {
     const raw = {
         pythonPath: partial?.pythonPath ?? "python3",
-        dbDir: partial?.dbDir && partial.dbDir.length > 0 ? partial.dbDir : defaultDbDir(),
+        dbDir: partial?.dbDir ?? "",
         autoIngest: partial?.autoIngest ?? true,
         timeoutMs: partial?.timeoutMs ?? 30_000,
     };

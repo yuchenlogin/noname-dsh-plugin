@@ -56,7 +56,10 @@ describe("context-as-asset loop", () => {
       ["event", "--session", "A", "--type", "user.message", "--payload", JSON.stringify({ text: "context is an asset" })],
       opts,
     );
-    const view = await buildLedgerView(resolveConfig({ dbDir: dir }));
+    const view = await buildLedgerView(
+      {} as Parameters<typeof buildLedgerView>[0],
+      resolveConfig({ dbDir: dir }),
+    );
     expect(view.html.length).toBeGreaterThan(1000);
     for (const label of ["收件箱", "状态", "版本演进", "因果图", "时间线"]) {
       expect(view.html).toContain(label);

@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.3.0] - 2026-10-08
+
+### Features（账本粒度：一个工作区一本账）
+
+旧行为是**全局一本账**：`dbDir` 默认 `$DSH_HOME/noname`，与工作区无关——所有项目、所有会话共用一个 db，只在 db 内部用 `session_id` 区分。用户要的是项目粒度：一个工作区共享一本账。
+
+- **账本跟随 DSH 工作区**：会话 → 工作区的映射直接读 `ctx.workspaceRegistry`（`workspace.path` / `workspace.sessionIds`），落到 `<项目>/.noname/`（内核 quickstart 的同一约定，两个仓库都已 gitignore）。
+- **内核边界改为真实项目根**：`init --root <项目>`，此前是 `--root <dbDir>`——导致接续包里写着 `Workspace boundary: /Users/…/.dsh/noname`，`snapshot` 也因为在不存在的 git 仓库里跑而永远 `git_available: false`。
+- **解析不到工作区时不猜**：回落到旧的 `$DSH_HOME/noname`；多个工作区且无会话上下文时同样回落，绝不把一个项目的证据写进另一个项目的账本。
+- 账本 HTML 落在 `<项目>/.noname/noname-ledger.html`：内核 `validate_workspace_path` 强制生成物在项目边界内，所以账本与它的产物必须同处项目内。
+- `dbDir` 现在是**可选覆盖**：留空 = 工作区作用域；填了 = 固定目录（老行为，测试与自定义布局仍可用）。
+
+### Fixes（真机调试暴露的三个缺陷）
+
+- **内核目录在模块加载时冻结**：`resolveKernelRoot()` 的结果存成模块常量，模块一旦从随后被替换/删除的路径加载（插件管理器在 app 运行期间的 add/remove/add 循环），之后每次 spawn 都以 `ENOENT` 失败，而报错只提解释器、完全掩盖真因（用 `/bin/echo` 才反证出不是解释器的问题）。改为**调用时解析**并校验，缺包时抛 `kernel_missing` 并点名检查过的路径。
+- **`ensureNonameInit` 把"db 文件存在"当成"已初始化"**：任何读命令（`verify`/`state`/`search`）都会先创建空 db 文件，于是 init 被跳过，之后 `record`/`package`/`extract`/`ledger` 全部报 `project is not initialized`。改为**总是调用幂等 init**（实测内核 init 幂等且不覆盖已有 project 行）。
+- **spawn 失败信息无法区分病因**：`spawn <path> ENOENT` 分不清解释器还是 cwd，改为带上 `python/exists/cwd/cwdExists/pid`。
+- **自动入账的会话归属落进共享桶**：DSH 0.2.0-rc.2 的 `ToolExecution` 没有顶层 `sessionId`（会话 id 在 `exec.agent.sessionId`），旧探针静默回落到 `dsh-unknown`，26 条真机事件全部记错归属——与"按真实会话 id 归属、绝不落共享桶"的承诺矛盾。旧测试恰好伪造了 `sessionId`，所以从没覆盖真机形状。已修正并补真机形状的回归测试。
+
+### Tests
+
+- 新增 `tests/workspace.test.ts`（8 项）：会话→工作区映射、多个工作区时拒绝猜测、显式 dbDir 覆盖、`<项目>/.noname` 落点、内核边界=项目根、**两个项目互不串账**、**同一工作区的两个会话共享一本账**、自动入账落到调用方项目的账本、账本 HTML 落在项目边界内。
+- 新增 `ensureNonameInit` 空 db 文件回归测试、`agent.sessionId` 真机形状回归测试。
+- 全套 35 测试通过（真内核）。
+
 ## [0.2.0] - 2026-10-08
 
 ### Features（真实 DSH 宿主验证驱动）

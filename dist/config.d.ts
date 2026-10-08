@@ -4,16 +4,22 @@
  * (schemastery ValidationError), never as a `mkdir("")` deep in the bridge.
  *
  * Defaults are chosen so a first install works with zero configuration given
- * a system python3; `dbDir` falls back to a per-user home location so the
- * ledger never lands in the host's CWD or the kernel submodule.
+ * a system python3.  `dbDir` is an OPTIONAL override: left empty, the ledger
+ * is scoped to the DSH workspace (project) the call belongs to -- see
+ * workspace.ts -- so one project's evidence never mixes with another's.
  */
 import z from "@deepseek-ai/schemastery";
-/** Default ledger location: per-user, never the host CWD or the submodule. */
+/** Ledger directory inside a project, matching the kernel's own quickstart. */
+export declare const ledgerDirName = ".noname";
+/** Legacy per-user ledger location: used only when no workspace resolves. */
 export declare function defaultDbDir(): string;
 export interface NonameConfig {
     /** Python interpreter used for the sidecar (default python3). */
     pythonPath: string;
-    /** Directory holding the NoName db (default <dsh-home>/noname or ~/.dsh/noname). */
+    /**
+     * Explicit ledger directory.  Empty (default) means "scope the ledger to
+     * the session's DSH workspace": `<workspace>/.noname`.
+     */
     dbDir: string;
     /** Automatically ingest DSH tool results into the NoName evidence stream. */
     autoIngest: boolean;
@@ -33,7 +39,8 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
 }>>, "plain">;
 /**
  * Resolve raw (partial, possibly empty) config into a validated, complete
- * NonameConfig.  An empty dbDir is replaced by the per-user default here --
- * at the single boundary -- so downstream never sees `""`.
+ * NonameConfig.  An empty `dbDir` stays empty on purpose: it is the signal
+ * for workspace-scoped resolution, which needs the call's session and cannot
+ * be decided at load time.
  */
 export declare function resolveConfig(partial?: Partial<NonameConfig>): NonameConfig;

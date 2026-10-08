@@ -13,12 +13,26 @@
  */
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { ensureNonameInit, runNoname } from "./kernel.js";
+import { ledgerTarget, sessionIdOf } from "./workspace.js";
 /** Uniform model-facing rendering: strings pass through, values pretty-print. */
 function text(value) {
     return [{ type: "text", text: typeof value === "string" ? value : JSON.stringify(value, null, 2) }];
 }
-function optsFor(config, signal) {
-    return { dbDir: config.dbDir, pythonPath: config.pythonPath, timeoutMs: config.timeoutMs, signal };
+/**
+ * Bridge options for one call: the ledger is resolved per call from the
+ * calling session's workspace, so two sessions in two projects never share a
+ * db even though they run in the same host process.
+ */
+function optsFor(ctx, config, exec) {
+    const target = ledgerTarget(ctx, config, sessionIdOf(exec));
+    const signal = exec?.signal;
+    return {
+        dbDir: target.dbDir,
+        root: target.root,
+        pythonPath: config.pythonPath,
+        timeoutMs: config.timeoutMs,
+        signal,
+    };
 }
 export function registerNonameTools(ctx, config) {
     ctx.tools.register(defineTool({
@@ -31,7 +45,7 @@ export function registerNonameTools(ctx, config) {
         },
         output: { schema: { type: "string" }, render: (_a, v) => text(v) },
         async execute(args, exec) {
-            const opts = optsFor(config, exec.signal);
+            const opts = optsFor(ctx, config, exec);
             await ensureNonameInit(opts);
             const r = await runNoname(["event", "--session", args.session, "--type", args.event_type, "--payload", JSON.stringify({ text: args.text })], opts);
             return `recorded event ${r.id}`;
@@ -47,7 +61,7 @@ export function registerNonameTools(ctx, config) {
         output: { schema: { type: "string" }, render: (_a, v) => text(v) },
         async execute(args, exec) {
             // `package` emits markdown, not JSON: raw mode.
-            return await runNoname(["package", "--task", args.task, "--session", args.session], { ...optsFor(config, exec.signal), raw: true });
+            return await runNoname(["package", "--task", args.task, "--session", args.session], { ...optsFor(ctx, config, exec), raw: true });
         },
     }));
     ctx.tools.register(defineTool({
@@ -56,7 +70,7 @@ export function registerNonameTools(ctx, config) {
         parameters: { query: { type: "string", required: true, description: "Search query" } },
         output: { schema: { type: "string" }, render: (_a, v) => text(v) },
         async execute(args, exec) {
-            return JSON.stringify(await runNoname(["search", args.query], optsFor(config, exec.signal)));
+            return JSON.stringify(await runNoname(["search", args.query], optsFor(ctx, config, exec)));
         },
     }));
     ctx.tools.register(defineTool({
@@ -65,7 +79,7 @@ export function registerNonameTools(ctx, config) {
         parameters: {},
         output: { schema: { type: "string" }, render: (_a, v) => text(v) },
         async execute(_args, exec) {
-            return JSON.stringify(await runNoname(["state", "--layer", "high"], optsFor(config, exec.signal)));
+            return JSON.stringify(await runNoname(["state", "--layer", "high"], optsFor(ctx, config, exec)));
         },
     }));
     ctx.tools.register(defineTool({
@@ -74,7 +88,7 @@ export function registerNonameTools(ctx, config) {
         parameters: {},
         output: { schema: { type: "string" }, render: (_a, v) => text(v) },
         async execute(_args, exec) {
-            return JSON.stringify(await runNoname(["inbox"], optsFor(config, exec.signal)));
+            return JSON.stringify(await runNoname(["inbox"], optsFor(ctx, config, exec)));
         },
     }));
     ctx.tools.register(defineTool({
@@ -97,7 +111,7 @@ export function registerNonameTools(ctx, config) {
             const cmd = ["taste-add", "--scope", args.scope ?? "project", "--content", JSON.stringify(content)];
             if (args.reason)
                 cmd.push("--reason", args.reason);
-            return JSON.stringify(await runNoname(cmd, optsFor(config, exec.signal)));
+            return JSON.stringify(await runNoname(cmd, optsFor(ctx, config, exec)));
         },
     }));
     // --- Adopted taste track: the MODEL proposes from a striking moment; the
@@ -116,7 +130,7 @@ export function registerNonameTools(ctx, config) {
             const content = { attitude: args.attitude };
             if (args.example)
                 content.example = args.example;
-            const r = await runNoname(["taste-propose", "--content", JSON.stringify(content), "--source-event", args.source_event, "--reason", args.reason], optsFor(config, exec.signal));
+            const r = await runNoname(["taste-propose", "--content", JSON.stringify(content), "--source-event", args.source_event, "--reason", args.reason], optsFor(ctx, config, exec));
             return JSON.stringify(r);
         },
     }));
@@ -134,7 +148,7 @@ export function registerNonameTools(ctx, config) {
             const cmd = ["taste-review", "--taste-id", args.taste_id, "--action", args.action, "--reviewer", args.reviewer];
             if (args.reason)
                 cmd.push("--reason", args.reason);
-            return JSON.stringify(await runNoname(cmd, optsFor(config, exec.signal)));
+            return JSON.stringify(await runNoname(cmd, optsFor(ctx, config, exec)));
         },
     }));
     ctx.tools.register(defineTool({
@@ -143,7 +157,7 @@ export function registerNonameTools(ctx, config) {
         parameters: {},
         output: { schema: { type: "string" }, render: (_a, v) => text(v) },
         async execute(_args, exec) {
-            return JSON.stringify(await runNoname(["card-queue"], optsFor(config, exec.signal)));
+            return JSON.stringify(await runNoname(["card-queue"], optsFor(ctx, config, exec)));
         },
     }));
     ctx.tools.register(defineTool({
@@ -153,7 +167,7 @@ export function registerNonameTools(ctx, config) {
         output: { schema: { type: "string" }, render: (_a, v) => text(v) },
         async execute(_args, exec) {
             const { buildLedgerView } = await import("./ui/ledger-view.js");
-            const view = await buildLedgerView(config);
+            const view = await buildLedgerView(ctx, config, exec);
             return `ledger written to ${view.htmlPath} (${view.html.length} bytes; open it to view the five views)`;
         },
     }));
@@ -163,7 +177,7 @@ export function registerNonameTools(ctx, config) {
         parameters: {},
         output: { schema: { type: "string" }, render: (_a, v) => text(v) },
         async execute(_args, exec) {
-            const r = await runNoname(["verify"], optsFor(config, exec.signal));
+            const r = await runNoname(["verify"], optsFor(ctx, config, exec));
             return r.ok ? "ledger integrity OK" : "ledger integrity FAILED";
         },
     }));
@@ -173,7 +187,7 @@ export function registerNonameTools(ctx, config) {
         parameters: { session: { type: "string", required: true, description: "Session id to extract from" } },
         output: { schema: { type: "string" }, render: (_a, v) => text(v) },
         async execute(args, exec) {
-            return JSON.stringify(await runNoname(["extract", "--session", args.session], optsFor(config, exec.signal)));
+            return JSON.stringify(await runNoname(["extract", "--session", args.session], optsFor(ctx, config, exec)));
         },
     }));
 }
