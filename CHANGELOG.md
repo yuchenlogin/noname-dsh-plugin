@@ -17,13 +17,15 @@
 - **内核目录在模块加载时冻结**：`resolveKernelRoot()` 的结果存成模块常量，模块一旦从随后被替换/删除的路径加载（插件管理器在 app 运行期间的 add/remove/add 循环），之后每次 spawn 都以 `ENOENT` 失败，而报错只提解释器、完全掩盖真因（用 `/bin/echo` 才反证出不是解释器的问题）。改为**调用时解析**并校验，缺包时抛 `kernel_missing` 并点名检查过的路径。
 - **`ensureNonameInit` 把"db 文件存在"当成"已初始化"**：任何读命令（`verify`/`state`/`search`）都会先创建空 db 文件，于是 init 被跳过，之后 `record`/`package`/`extract`/`ledger` 全部报 `project is not initialized`。改为**总是调用幂等 init**（实测内核 init 幂等且不覆盖已有 project 行）。
 - **spawn 失败信息无法区分病因**：`spawn <path> ENOENT` 分不清解释器还是 cwd，改为带上 `python/exists/cwd/cwdExists/pid`。
-- **自动入账的会话归属落进共享桶**：DSH 0.2.0-rc.2 的 `ToolExecution` 没有顶层 `sessionId`（会话 id 在 `exec.agent.sessionId`），旧探针静默回落到 `dsh-unknown`，26 条真机事件全部记错归属——与"按真实会话 id 归属、绝不落共享桶"的承诺矛盾。旧测试恰好伪造了 `sessionId`，所以从没覆盖真机形状。已修正并补真机形状的回归测试。
+- **自动入账的会话归属落进共享桶**：DSH 0.2.0-rc.2 的 `ToolExecution` 没有顶层 `sessionId`，旧探针静默回落到 `dsh-unknown`，26 条真机事件全部记错归属——与"按真实会话 id 归属、绝不落共享桶"的承诺矛盾。旧测试恰好伪造了 `sessionId`，所以从没覆盖真机形状。已修正并补真机形状的回归测试。
+- **会话 id 的真机取法（第二轮真机验证）**：`ToolExecution.agent` 的**类型声明**里有 `sessionId`，但真机对象上没有这个属性——DSH 官方代码（`dsh-tool-present`）一律用 `exec.agent.session`，`Session.id` 是 getter；全仓 `agent.sessionId` 出现 0 次。只读 `agent.sessionId` 会静默拿不到会话 → 账本无法定位工作区而回落全局账本、自动入账继续落 `dsh-unknown`。现在按 `agent.session.id` 读，并保留其它形状兼容。
+- **回落不再无声**：`noname_verify` 现在报出本次调用用了哪本账以及为什么——`scope=workspace title=… session=…`，或 `scope=global (session groups under no workspace: registry=yes workspaces=2)`。一次静默回落过去看起来和"工作区作用域正常工作"完全一样，只靠事件条数才露馅。
 
 ### Tests
 
-- 新增 `tests/workspace.test.ts`（8 项）：会话→工作区映射、多个工作区时拒绝猜测、显式 dbDir 覆盖、`<项目>/.noname` 落点、内核边界=项目根、**两个项目互不串账**、**同一工作区的两个会话共享一本账**、自动入账落到调用方项目的账本、账本 HTML 落在项目边界内。
-- 新增 `ensureNonameInit` 空 db 文件回归测试、`agent.sessionId` 真机形状回归测试。
-- 全套 35 测试通过（真内核）。
+- 新增 `tests/workspace.test.ts`（9 项）：会话→工作区映射、多个工作区时拒绝猜测、显式 dbDir 覆盖、`<项目>/.noname` 落点、内核边界=项目根、**两个项目互不串账**、**同一工作区的两个会话共享一本账**、自动入账落到调用方项目的账本、账本 HTML 落在项目边界内、回落原因可读。
+- 新增 `ensureNonameInit` 空 db 文件回归测试、真机会话形状（`agent.session.id`）回归测试。
+- 全套 36 测试通过（真内核）。
 
 ## [0.2.0] - 2026-10-08
 

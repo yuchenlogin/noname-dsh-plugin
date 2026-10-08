@@ -13,7 +13,7 @@
  */
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { ensureNonameInit, runNoname } from "./kernel.js";
-import { ledgerTarget, sessionIdOf } from "./workspace.js";
+import { describeLedgerTarget, ledgerTarget, sessionIdOf } from "./workspace.js";
 /** Uniform model-facing rendering: strings pass through, values pretty-print. */
 function text(value) {
     return [{ type: "text", text: typeof value === "string" ? value : JSON.stringify(value, null, 2) }];
@@ -177,8 +177,14 @@ export function registerNonameTools(ctx, config) {
         parameters: {},
         output: { schema: { type: "string" }, render: (_a, v) => text(v) },
         async execute(_args, exec) {
-            const r = await runNoname(["verify"], optsFor(ctx, config, exec));
-            return r.ok ? "ledger integrity OK" : "ledger integrity FAILED";
+            const opts = optsFor(ctx, config, exec);
+            const r = await runNoname(["verify"], opts);
+            // Report WHICH ledger this call used, and why: a silent fallback to
+            // the global directory once looked exactly like a working
+            // workspace-scoped ledger, and only the number of events gave it away.
+            const target = ledgerTarget(ctx, config, sessionIdOf(exec));
+            const status = r.ok ? "ledger integrity OK" : "ledger integrity FAILED";
+            return `${status} — ${describeLedgerTarget(target)}`;
         },
     }));
     ctx.tools.register(defineTool({

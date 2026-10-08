@@ -51,6 +51,38 @@ export interface LedgerTarget {
   scope: "config" | "workspace" | "global";
   /** Workspace display title, when the target came from a workspace. */
   title?: string;
+  /**
+   * Why this target was chosen.  Without it a fallback is indistinguishable
+   * from a correct answer -- the exact blindness that let a global ledger look
+   * like a working workspace ledger.
+   */
+  detail: {
+    /** Session id read from the execution, when the host supplied one. */
+    sessionId?: string;
+    /** Was the workspace registry reachable from this context? */
+    registry: boolean;
+    /** How many workspaces it listed. */
+    workspaces: number;
+  };
+}
+
+/** One-line, honest description of a resolved target (shown by noname_verify). */
+export function describeLedgerTarget(target: LedgerTarget): string {
+  const { sessionId, registry, workspaces } = target.detail;
+  const session = sessionId ? `session=${sessionId}` : "session=(none)";
+  if (target.scope === "workspace") {
+    return `scope=workspace title=${target.title ?? "?"} ${session} db=${target.dbDir}`;
+  }
+  if (target.scope === "config") {
+    return `scope=config (explicit dbDir) ${session} db=${target.dbDir}`;
+  }
+  const why = registry ? `registry=yes workspaces=${workspaces}` : "registry=no";
+  const reason = !registry
+    ? "workspace registry unreachable"
+    : sessionId
+      ? "session groups under no workspace"
+      : "no session id on the execution";
+  return `scope=global (${reason}: ${why}) ${session} db=${target.dbDir}`;
 }
 
 /**
@@ -65,23 +97,29 @@ export function sessionIdOf(exec: unknown): string | undefined {
     | {
         sessionId?: unknown;
         session?: { id?: unknown };
-        agent?: { sessionId?: unknown };
+        agent?: { sessionId?: unknown; session?: { id?: unknown } };
       }
     | undefined;
-  const candidates = [e?.sessionId, e?.session?.id, e?.agent?.sessionId];
+  const candidates = [e?.sessionId, e?.session?.id, e?.agent?.sessionId, e?.agent?.session?.id];
   for (const candidate of candidates) {
     if (typeof candidate === "string" && candidate.length > 0) return candidate;
   }
   return undefined;
 }
 
-/** Resolve the workspace registry defensively: absent services are not fatal. */
+/**
+ * Resolve the workspace registry defensively: absent services are not fatal
+ * (a headless composition has no workspace feature), and a provider that is
+ * not active yet must not break a tool call.
+ */
 function registryOf(ctx: Context | undefined): RegistryLike | undefined {
-  try {
-    const registry = ctx?.get?.("workspaceRegistry") as RegistryLike | undefined;
-    if (registry && typeof registry.list === "function") return registry;
-  } catch {
-    // A missing/not-yet-ready service must never break a tool call.
+  for (const strict of [true, false]) {
+    try {
+      const registry = ctx?.get?.("workspaceRegistry", strict) as RegistryLike | undefined;
+      if (registry && typeof registry.list === "function") return registry;
+    } catch {
+      // A strict get throws while the provider fiber is inactive; retry below.
+    }
   }
   return undefined;
 }
@@ -95,24 +133,28 @@ function registryOf(ctx: Context | undefined): RegistryLike | undefined {
 export function resolveWorkspace(
   ctx: Context | undefined,
   sessionId?: string,
-): WorkspaceLike | undefined {
+): { workspace?: WorkspaceLike; registry: boolean; workspaces: number } {
   const registry = registryOf(ctx);
-  if (!registry) return undefined;
+  if (!registry) return { registry: false, workspaces: 0 };
   let list: WorkspaceLike[];
   try {
     list = registry.list();
   } catch {
-    return undefined;
+    return { registry: false, workspaces: 0 };
   }
-  if (!Array.isArray(list)) return undefined;
+  if (!Array.isArray(list)) return { registry: true, workspaces: 0 };
   if (sessionId) {
     const owner = list.find(
       (w) => Array.isArray(w?.sessionIds) && w.sessionIds!.includes(sessionId),
     );
-    if (owner?.path) return owner;
+    if (owner?.path) return { workspace: owner, registry: true, workspaces: list.length };
   }
   const usable = list.filter((w) => typeof w?.path === "string" && w.path.length > 0);
-  return usable.length === 1 ? usable[0] : undefined;
+  return {
+    workspace: usable.length === 1 ? usable[0] : undefined,
+    registry: true,
+    workspaces: list.length,
+  };
 }
 
 /**
@@ -127,17 +169,28 @@ export function ledgerTarget(
   sessionId?: string,
 ): LedgerTarget {
   if (config.dbDir) {
-    return { dbDir: config.dbDir, root: config.dbDir, scope: "config" };
+    return {
+      dbDir: config.dbDir,
+      root: config.dbDir,
+      scope: "config",
+      detail: { sessionId, registry: false, workspaces: 0 },
+    };
   }
-  const workspace = resolveWorkspace(ctx, sessionId);
+  const { workspace, registry, workspaces } = resolveWorkspace(ctx, sessionId);
   if (workspace?.path) {
     return {
       dbDir: join(workspace.path, ledgerDirName),
       root: workspace.path,
       scope: "workspace",
       title: workspace.title,
+      detail: { sessionId, registry, workspaces },
     };
   }
   const fallback = defaultDbDir();
-  return { dbDir: fallback, root: fallback, scope: "global" };
+  return {
+    dbDir: fallback,
+    root: fallback,
+    scope: "global",
+    detail: { sessionId, registry, workspaces },
+  };
 }

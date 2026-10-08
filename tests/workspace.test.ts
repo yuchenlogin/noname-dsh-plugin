@@ -17,7 +17,7 @@ import { registerNonameTools } from "../src/tools.js";
 import { drainIngests, registerIngestion } from "../src/ingest.js";
 import { runNoname } from "../src/kernel.js";
 import { buildLedgerView } from "../src/ui/ledger-view.js";
-import { ledgerTarget, resolveWorkspace, sessionIdOf } from "../src/workspace.js";
+import { describeLedgerTarget, ledgerTarget, resolveWorkspace, sessionIdOf } from "../src/workspace.js";
 
 let root: string;
 beforeEach(async () => {
@@ -47,7 +47,8 @@ describe("sessionIdOf", () => {
     expect(sessionIdOf({ sessionId: "s1" })).toBe("s1");
     expect(sessionIdOf({ session: { id: "s2" } })).toBe("s2");
     // DSH 0.2.0-rc.2 carries the id on the agent, not on the execution.
-    expect(sessionIdOf({ agent: { sessionId: "s3" } })).toBe("s3");
+    expect(sessionIdOf({ agent: { session: { id: "s3" } } })).toBe("s3");
+    expect(sessionIdOf({ agent: { sessionId: "s4" } })).toBe("s4");
     expect(sessionIdOf({ name: "bash" })).toBeUndefined();
     expect(sessionIdOf(undefined)).toBeUndefined();
   });
@@ -61,17 +62,54 @@ describe("resolveWorkspace", () => {
       { path: a, title: "alpha", sessionIds: ["sA"] },
       { path: b, title: "beta", sessionIds: ["sB"] },
     ];
-    expect(resolveWorkspace(makeCtx(workspaces).ctx, "sB")?.path).toBe(b);
-    // No session + several projects: undefined rather than writing one
+    const ctx = makeCtx(workspaces).ctx;
+    expect(resolveWorkspace(ctx, "sB").workspace?.path).toBe(b);
+    // No session + several projects: no workspace rather than writing one
     // project's evidence into another's ledger.
-    expect(resolveWorkspace(makeCtx(workspaces).ctx)).toBeUndefined();
+    expect(resolveWorkspace(ctx).workspace).toBeUndefined();
+    expect(resolveWorkspace(ctx)).toMatchObject({ registry: true, workspaces: 2 });
     // A single project is unambiguous even without a session.
-    expect(resolveWorkspace(makeCtx([workspaces[0]]).ctx)?.path).toBe(a);
+    expect(resolveWorkspace(makeCtx([workspaces[0]]).ctx).workspace?.path).toBe(a);
   });
 
-  it("degrades to undefined without the registry service", () => {
-    expect(resolveWorkspace(makeCtx().ctx, "sA")).toBeUndefined();
-    expect(resolveWorkspace(undefined, "sA")).toBeUndefined();
+  it("reports an unreachable registry instead of pretending it looked", () => {
+    expect(resolveWorkspace(makeCtx().ctx, "sA")).toMatchObject({ registry: false, workspaces: 0 });
+    expect(resolveWorkspace(undefined, "sA").registry).toBe(false);
+  });
+});
+
+describe("describeLedgerTarget", () => {
+  it("names the scope, the session and the reason for a fallback", () => {
+    const a = join(root, "alpha");
+    const scoped = ledgerTarget(
+      makeCtx([{ path: a, title: "alpha", sessionIds: ["sA"] }]).ctx,
+      resolveConfig({}),
+      "sA",
+    );
+    expect(describeLedgerTarget(scoped)).toContain("scope=workspace title=alpha");
+    expect(describeLedgerTarget(scoped)).toContain("session=sA");
+
+    // A reachable registry with two projects, but no session on the execution.
+    const noSession = ledgerTarget(
+      makeCtx([
+        { path: join(root, "x"), sessionIds: [] },
+        { path: join(root, "y"), sessionIds: [] },
+      ]).ctx,
+      resolveConfig({}),
+    );
+    expect(describeLedgerTarget(noSession)).toContain("no session id on the execution");
+    expect(describeLedgerTarget(ledgerTarget(makeCtx().ctx, resolveConfig({}), "sA"))).toContain(
+      "workspace registry unreachable",
+    );
+    const ungrouped = ledgerTarget(
+      makeCtx([
+        { path: join(root, "x"), sessionIds: ["other"] },
+        { path: join(root, "y"), sessionIds: ["another"] },
+      ]).ctx,
+      resolveConfig({}),
+      "sA",
+    );
+    expect(describeLedgerTarget(ungrouped)).toContain("session groups under no workspace");
   });
 });
 

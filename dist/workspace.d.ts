@@ -42,7 +42,22 @@ export interface LedgerTarget {
     scope: "config" | "workspace" | "global";
     /** Workspace display title, when the target came from a workspace. */
     title?: string;
+    /**
+     * Why this target was chosen.  Without it a fallback is indistinguishable
+     * from a correct answer -- the exact blindness that let a global ledger look
+     * like a working workspace ledger.
+     */
+    detail: {
+        /** Session id read from the execution, when the host supplied one. */
+        sessionId?: string;
+        /** Was the workspace registry reachable from this context? */
+        registry: boolean;
+        /** How many workspaces it listed. */
+        workspaces: number;
+    };
 }
+/** One-line, honest description of a resolved target (shown by noname_verify). */
+export declare function describeLedgerTarget(target: LedgerTarget): string;
 /**
  * Read the session id out of a host execution object.
  *
@@ -57,7 +72,11 @@ export declare function sessionIdOf(exec: unknown): string | undefined;
  * refuse to guess: the caller falls back to the legacy directory instead of
  * writing one project's evidence into another's ledger.
  */
-export declare function resolveWorkspace(ctx: Context | undefined, sessionId?: string): WorkspaceLike | undefined;
+export declare function resolveWorkspace(ctx: Context | undefined, sessionId?: string): {
+    workspace?: WorkspaceLike;
+    registry: boolean;
+    workspaces: number;
+};
 /**
  * Resolve the ledger a call belongs to.
  *
