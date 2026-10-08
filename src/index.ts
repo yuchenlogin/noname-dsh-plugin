@@ -5,8 +5,10 @@
  * append-only evidence stream, versioned memory, first-class taste and
  * audited approvals into DSH -- without re-implementing any of it.  The
  * Python kernel (vendor/noname-harness) stays the single source of truth;
- * this layer registers model-visible tools, ingests DSH tool results into
- * the evidence stream, and renders the ledger panel.
+ * this layer registers model-visible tools (including the ledger as the
+ * `noname_ledger` tool -- the host has no reachable sidebar seam, verified on
+ * a live DSH web profile) and ingests DSH tool results into the evidence
+ * stream.
  */
 
 import type { Context } from "@deepseek-ai/cordis";

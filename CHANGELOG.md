@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.2.0] - 2026-10-08
+
+### Features（真实 DSH 宿主验证驱动）
+
+在真实 DeepSeek Harness 0.2.0-rc.2 web profile 上做了端到端真机验证，修正了两个只有真机才能暴露的问题：
+
+- **peerDependencies 版本兼容**：首版钉死 `dsh-tools@0.0.1-rc.1`，真实 DSH 运行时（0.2.0-rc.2）因 peer 版本不兼容**直接禁用插件**（`disabling profile plugin row`）。改为兼容范围（`cordis ^4.0.4`、`dsh-tools >=0.0.1-rc.1`），devDeps 对齐宿主配套版本（dsh-tools 0.2.0-rc.2 + cordis 4.0.4）——真机上插件不再被禁用，`kernel ready` 日志确认加载。
+- **账本形态改为真机可达的 `noname_ledger` 工具**：真机实测发现 `sidebarRightTabs` 服务**不在 host 侧**（属 client-UI 侧，工具/服务插件无法触及），sidebar 面板无法从本插件注册。诚实地把账本从「宣称的 sidebar 面板」改为「真机可达的工具」——`noname_ledger` 调内核 `ledger-html` 生成五视图 HTML 返回路径。消除「未真机验证的面板」这一评审保留项。工具数 11 → 12。
+
+### Design Rationale
+
+- **为什么改工具而非继续等 sidebar**：评审者（DSH QA 96、架构 97）保留的分数都指向「sidebar keyed-slot 未真机验证」。真机验证给出决定性答案后，最诚实的选择是把账本做成真机上真实可达的形态，而不是留一个在真机里不存在的面板承诺。「界面是地图，但地图必须真实存在。」
+
+### Notes & Caveats
+
+- 真机验证（DSH web profile 启动日志）：插件加载、`kernel ready: context is an asset.`、**未被禁用**。
+- `noname_ledger` 端到端验证：真实产出五视图 HTML（含 收件箱/状态/版本演进/因果图/时间线）。
+- 25 测试全绿；CI 8/8 矩阵全绿。
+- 若 DSH 未来暴露 host 可达面板 seam，`buildLedgerView()` 输出可直接接入。
+
 ## [0.1.2] - 2026-10-08
 
 ### Fixes（复审驱动：架构 74→90 后的剩余 10 分）

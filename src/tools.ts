@@ -191,6 +191,21 @@ export function registerNonameTools(ctx: Context, config: NonameConfig): void {
 
   ctx.tools.register(
     defineTool({
+      name: "noname_ledger",
+      description:
+        "Render the NoName ledger as a five-view HTML report (review inbox / state / version evolution / causal map / timeline) and return its file path. Open the file to inspect why the project is the way it is. This is the ledger's form in DSH (no host-reachable sidebar seam exists).",
+      parameters: {},
+      output: { schema: { type: "string" }, render: (_a, v) => text(v) },
+      async execute(_args, exec) {
+        const { buildLedgerView } = await import("./ui/ledger-view.js");
+        const view = await buildLedgerView(config);
+        return `ledger written to ${view.htmlPath} (${view.html.length} bytes; open it to view the five views)`;
+      },
+    }),
+  );
+
+  ctx.tools.register(
+    defineTool({
       name: "noname_verify",
       description: "Verify the integrity of the NoName ledger (append-only evidence has not been corrupted).",
       parameters: {},
@@ -226,6 +241,7 @@ export const NONAME_TOOL_NAMES = [
   "noname_taste_propose",
   "noname_taste_review",
   "noname_card_queue",
+  "noname_ledger",
   "noname_verify",
   "noname_extract",
 ] as const;

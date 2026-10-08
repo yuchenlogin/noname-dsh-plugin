@@ -9,9 +9,9 @@
 ```
 DeepSeek Harness
   └─ noname-dsh-plugin (TypeScript, Cordis)
-       ├─ 工具层    ctx.tools.register ── 11 个模型可见工具
+       ├─ 工具层    ctx.tools.register ── 12 个模型可见工具
        ├─ 事件观察  ctx.on('tools/result') ── DSH 事件自动入账
-       └─ UI 面板   右侧 sidebar ── 账本五视图（HTML 由内核生成，渲染方式随宿主）
+       └─ 账本访问  noname_ledger 工具 ── 五视图 HTML（真机验证：host 侧无可达 sidebar seam）
             │ child_process: python -m noname_harness <cmd>（stdout JSON）
             ▼
        NoName 内核（vendor/noname-harness，Python 标准库 + SQLite）
@@ -63,16 +63,19 @@ dsh plugin --profile web add /path/to/noname-dsh-plugin
 | `noname_taste_propose` | 从「眼前一亮的模型时刻」提出**采纳品味**候选（Adopted，人审核） |
 | `noname_taste_review` | 品味生命周期审核（adopt/edit/pause/resume/retire） |
 | `noname_card_queue` | 品味卡复核队列（「这还是现在的我吗」） |
+| `noname_ledger` | 渲染账本五视图为 HTML 并返回路径（真机可达的账本形态） |
 | `noname_verify` | 校验账本完整性 |
 | `noname_extract` | 从会话事件抽取记忆候选（绝不自我确认） |
 
 品味是双轨的：`taste_add` 是你主动写下的态度；`taste_propose` 是模型从它令你眼前一亮的表现中提出、经你选择后跨项目延续的候选——后者绝不伪装成你的原话。
 
-## 账本面板
+## 账本访问（真机验证后的形态）
 
-面板按 DSH 真实 sidebar 契约（`ctx.sidebarRightTabs` 静态定义 + keyed slot 正文）注册 `noname-ledger` tab，渲染五视图：审核收件箱 / 状态 / 版本演进 / 因果图 / 时间线。HTML 由 NoName 内核 `ledger-html` 生成（它自己的克制暗色设计、离线单文件），与命令行 `ledger-html` 输出完全一致；具体渲染方式（iframe/webview）由 DSH 宿主的 slot 渲染器决定。
+**真机验证发现**（在真实 DeepSeek Harness 0.2.0-rc.2 web profile 上实测）：`sidebarRightTabs` 服务**不在 host 侧**——它属于 client-UI 侧，工具/服务类插件无法触及。因此 sidebar 面板无法从本插件注册，宣称它能就是撒谎。
 
-> **诚实标注**：sidebar 的 keyed-slot 正文接线需要在真实 DSH 宿主中验证；当前版本以文档化的静态定义注册，若宿主 sidebar API 有差异，插件会警告并降级为「无面板、工具不受影响」，绝不因面板失败而拖垮整个插件。
+所以账本在 DSH 里的诚实形态是一个**工具**：`noname_ledger` 调用内核 `ledger-html` 生成五视图 HTML（审核收件箱 / 状态 / 版本演进 / 因果图 / 时间线，NoName 自己的克制暗色设计、离线单文件），返回文件路径，模型或用户保存即可查看。这条路径已在真机上验证加载与产出。
+
+若 DSH 未来暴露 host 可达的面板 seam，同一份 `buildLedgerView()` 输出可直接接入。
 
 ## 已知边界（Roadmap）
 

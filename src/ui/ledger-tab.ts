@@ -1,70 +1,31 @@
 /**
- * Sidebar tab registration for the NoName ledger panel -- honest best-effort.
+ * NoName ledger access.
  *
- * The real DSH sidebar contract (reference/subsystems/sidebar-right) is a
- * TWO-part registration: a static definition in `ctx.sidebarRightTabs` plus a
- * keyed slot that provides the body, with `useTabInfo()` injected and the
- * framework owning the `sidebar://<kind>` address.  That full surface cannot
- * be exercised without a live DSH host, so this module:
+ * REAL-HOST FINDING (verified against a live DeepSeek Harness 0.2.0-rc.2 web
+ * profile): the `sidebarRightTabs` service is NOT present on the host side of
+ * the plugin runtime -- it lives on the client-UI side, which a tool/service
+ * plugin cannot reach.  A sidebar panel therefore cannot be registered from
+ * this plugin today, and claiming one would be a lie.
  *
- *  1. registers the static definition through the documented
- *     `ctx.sidebarRightTabs.register(...)` shape (in an effect, so it is
- *     disposed with the plugin), and
- *  2. exposes the ledger HTML builder separately so the panel body (and any
- *     future settings card) renders real content.
- *
- * It does NOT claim a working keyed-slot body: that requires a live host to
- * verify, and is marked as such rather than faked.  If the sidebar service is
- * absent, the plugin still loads and every tool keeps working.
+ * The honest form of the ledger in DSH is therefore a TOOL: `noname_ledger`
+ * returns the five-view HTML the kernel generates, which the model (and the
+ * user, by saving it) can open.  This is verified to load and run on the real
+ * host.  Should DSH later expose a host-reachable panel seam, the same
+ * buildLedgerView() output plugs straight into it.
  */
 
 import type { Context } from "@deepseek-ai/cordis";
 import { buildLedgerView } from "./ledger-view.js";
 import type { NonameConfig } from "../config.js";
 
-export const LEDGER_TAB_KIND = "noname-ledger";
-
-interface SidebarTabsRegistry {
-  register?: (definition: Record<string, unknown>) => (() => void) | void;
+/**
+ * Kept for API compatibility: historically this registered a sidebar tab.
+ * On the real host there is no reachable sidebar seam, so this is a no-op
+ * (the ledger is exposed as the `noname_ledger` tool instead).  It never
+ * touches the inject gate, so it can never break plugin load.
+ */
+export function registerLedgerTab(_ctx: Context, _config: NonameConfig): void {
+  // Intentionally a no-op: see the module docstring for the real-host finding.
 }
 
-export function registerLedgerTab(ctx: Context, config: NonameConfig): void {
-  ctx.effect(() => {
-    // Optional service: read it via ctx.get (never a property access on the
-    // sync path).  Cordis's inject check throws on a property read of an
-    // uninjected service under some loaders, so even a defensive cast on the
-    // apply() path can crash plugin load.  ctx.get returns undefined instead,
-    // degrading to "no panel" without touching the inject gate.
-    const registry = ctx.get("sidebarRightTabs") as SidebarTabsRegistry | undefined;
-
-    let dispose: (() => void) | void;
-    if (typeof registry?.register === "function") {
-      try {
-        // Static definition per the documented shape: an id, the kind of
-        // address it opens, a localized title and a loading hint.  The body is
-        // provided separately (see buildLedgerView) and wired to a keyed slot
-        // once verified against a live host.
-        dispose = registry.register({
-          id: LEDGER_TAB_KIND,
-          kind: LEDGER_TAB_KIND,
-          title: () => "NoName 账本",
-          loading: () => "正在生成账本…",
-          // The renderer delegates to the kernel; a live host calls this to
-          // obtain the five-view HTML.
-          render: async () => ({ html: (await buildLedgerView(config)).html }),
-        });
-      } catch (err) {
-        console.warn(
-          `[noname-harness] sidebar tab registration failed (panel disabled): ${(err as Error).message}`,
-        );
-      }
-    } else {
-      console.warn(
-        "[noname-harness] sidebar registry not present; ledger panel disabled, tools unaffected",
-      );
-    }
-    return () => {
-      if (typeof dispose === "function") dispose();
-    };
-  });
-}
+export { buildLedgerView };
