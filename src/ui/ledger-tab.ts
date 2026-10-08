@@ -29,10 +29,14 @@ interface SidebarTabsRegistry {
 }
 
 export function registerLedgerTab(ctx: Context, config: NonameConfig): void {
-  const registry = (ctx as unknown as { sidebarRightTabs?: SidebarTabsRegistry })
-    .sidebarRightTabs;
-
   ctx.effect(() => {
+    // Optional service: read it via ctx.get (never a property access on the
+    // sync path).  Cordis's inject check throws on a property read of an
+    // uninjected service under some loaders, so even a defensive cast on the
+    // apply() path can crash plugin load.  ctx.get returns undefined instead,
+    // degrading to "no panel" without touching the inject gate.
+    const registry = ctx.get("sidebarRightTabs") as SidebarTabsRegistry | undefined;
+
     let dispose: (() => void) | void;
     if (typeof registry?.register === "function") {
       try {
