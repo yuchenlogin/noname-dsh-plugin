@@ -17,7 +17,6 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",
-    "test:kernel": "cd vendor/noname-harness && python3 -m pytest -q",
     "prepack": "npm run build",
     "sync:kernel": "bash scripts/sync-kernel.sh",
     "check:kernel": "bash scripts/sync-kernel.sh --check"

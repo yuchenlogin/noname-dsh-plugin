@@ -110,7 +110,7 @@ DSH 工作区（项目）
 ```bash
 npm run build          # 编译 TS → dist/
 npm test               # vitest（41 项，含真内核端到端、ingest 诚实性与验收回归）
-npm run test:kernel    # NoName 内核 654 测试（内核快照见 vendor/noname_harness_pkg/KERNEL_VERSION.txt）
+# 内核完整测试在 NoNameAgentHarness 仓库运行；本仓 npm test 验证插件桥接
 ```
 
 ### 升级内核
@@ -120,8 +120,8 @@ npm run test:kernel    # NoName 内核 654 测试（内核快照见 vendor/nonam
 ```bash
 npm run sync:kernel -- --commit main   # fetch 内核远端 main 并同步精确 commit
 # 或指定 SHA：npm run sync:kernel -- --commit <sha>
-npm run test:kernel                   # 内核回归
-npm test                              # 桥接契约回归
+# 内核回归：在 NoNameAgentHarness 仓库执行 pytest
+npm test                              # 插件桥接契约回归
 npm run check:kernel                  # 检查 submodule、快照、版本声明是否一致
 
 git add vendor/noname-harness vendor/noname_harness_pkg

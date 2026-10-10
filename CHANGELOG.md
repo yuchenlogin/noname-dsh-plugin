@@ -12,6 +12,7 @@
 ### Tests
 
 - 覆盖快照版本伪造、快照内容篡改、submodule 落后、干净状态、dry-run 约束等场景；插件全套 41 项测试通过。
+- 移除插件仓的 `test:kernel` npm script：它依赖未声明的 pytest，且会把内核平台测试与插件桥接 CI 混在一起。内核完整测试归 `NoNameAgentHarness` 仓库；插件仓的 `npm test` 负责桥接契约，CI 负责 vendored snapshot 检查与 import smoke。
 
 ## [0.4.0] - 2026-10-08
 
