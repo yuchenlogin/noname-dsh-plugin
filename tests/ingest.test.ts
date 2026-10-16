@@ -56,7 +56,7 @@ describe("ingestion", () => {
     const { ctx, handlers } = stubCtx();
     registerIngestion(ctx, resolveConfig({ dbDir: dir }));
     handlers["tools/result"](
-      { name: "noname_verify", callId: "c-agent", agent: { sessionId: "session-real-host" } },
+      { name: "bash", callId: "c-agent", agent: { sessionId: "session-real-host" } },
       { content: [{ type: "text", text: "ledger integrity OK" }] },
     );
     await drainIngests();
@@ -71,13 +71,40 @@ describe("ingestion", () => {
     const payload = { content: [{ type: "text", text: "identical-output" }] };
     handlers["tools/result"]({ name: "bash", callId: "dup", sessionId: "s1" }, payload);
     handlers["tools/result"]({ name: "bash", callId: "dup", sessionId: "s1" }, payload); // same callId -> dedup
-    handlers["tools/result"]({ name: "bash", callId: "other", sessionId: "s2" }, payload); // diff session -> kept
+    handlers["tools/result"]({ name: "bash", callId: "dup", sessionId: "s2" }, payload); // same id in another session -> kept
     await drainIngests();
     const events = await runNoname<{ session_id: string }[]>(["ledger"], { dbDir: dir });
     const s1 = events.filter((e) => e.session_id === "s1").length;
     const s2 = events.filter((e) => e.session_id === "s2").length;
     expect(s1).toBe(1);
     expect(s2).toBe(1);
+  });
+
+  it("keeps NoName reads out of evidence, including the private ledger URL", async () => {
+    const { ctx, handlers } = stubCtx();
+    registerIngestion(ctx, resolveConfig({ dbDir: dir }));
+    for (const name of ["noname_ledger", "noname_package", "noname_search", "noname_state", "noname_inbox", "noname_verify", "noname_card_queue", "noname_extract"]) {
+      handlers["tools/result"]({ name, callId: name, sessionId: "s1" }, {
+        content: [{ type: "text", text: "http://127.0.0.1:1234/private-review-token/" }],
+      });
+    }
+    await drainIngests();
+    expect(await runNoname(["ledger"], { dbDir: dir })).toEqual([]);
+  });
+
+  it("does not discard separate anonymous results with the same text prefix", async () => {
+    const { ctx, handlers } = stubCtx();
+    registerIngestion(ctx, resolveConfig({ dbDir: dir }));
+    const prefix = "This command has a standard preamble. ".repeat(3);
+    for (const ending of ["first finding", "second finding"]) {
+      handlers["tools/result"]({ name: "bash", sessionId: "s1" }, {
+        content: [{ type: "text", text: prefix + ending }],
+      });
+    }
+    await drainIngests();
+    const events = await runNoname<{ payload: { text: string } }[]>(["ledger"], { dbDir: dir });
+    expect(events).toHaveLength(2);
+    expect(events.map((event) => event.payload.text).join("\n")).toContain("second finding");
   });
 
   it("warns (not silently swallows) when the sidecar is unreachable", async () => {
@@ -116,5 +143,19 @@ describe("ingestion", () => {
     const { ctx, handlers } = stubCtx();
     registerIngestion(ctx, resolveConfig({ dbDir: dir, autoIngest: false }));
     expect(handlers["tools/result"]).toBeUndefined();
+  });
+
+  it("does not split a supplementary Unicode character at the excerpt boundary", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { ctx, handlers } = stubCtx();
+    registerIngestion(ctx, resolveConfig({ dbDir: dir }));
+    handlers["tools/result"]({ name: "bash", callId: "emoji", sessionId: "s1" }, {
+      content: [{ type: "text", text: "x".repeat(499) + "🎉 end" }],
+    });
+    await drainIngests();
+    const events = await runNoname<{ payload: { text: string } }[]>(["ledger"], { dbDir: dir });
+    expect(events).toHaveLength(1);
+    expect(events[0].payload.text).toContain("truncated");
+    expect(warn).not.toHaveBeenCalled();
   });
 });

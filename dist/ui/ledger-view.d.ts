@@ -1,8 +1,6 @@
 /**
- * NoName ledger view: generates the five-view ledger HTML by delegating to
- * the kernel's `ledger-html`.  The HTML is produced by NoName itself (its own
- * design language, offline, single file), so the view stays faithful to the
- * source and never re-implements the renderer.
+ * NoName ledger view: preserve the offline artifact and launch the kernel's
+ * live review UI. Both views use the kernel renderer and review semantics.
  *
  * The artifact is written to a FIXED path inside the workspace and overwritten
  * each render, so the db dir does not accumulate timestamped HTML files.
@@ -10,10 +8,14 @@
 import type { Context } from "@deepseek-ai/cordis";
 import type { NonameConfig } from "../config.js";
 export interface LedgerViewResult {
-    /** Absolute path of the generated HTML. */
-    htmlPath: string;
+    /** Absolute snapshot path, or null when the optional export failed. */
+    htmlPath: string | null;
     /** Raw HTML (for clients that render a string rather than a file). */
     html: string;
+    /** Authenticated loopback URL with human review controls. */
+    liveUrl: string;
+    /** Export/read error; live reviews remain available. */
+    snapshotError?: string;
 }
-/** Generate the ledger HTML via the kernel and return its path + contents. */
+/** Generate the offline artifact and return the live ledger's review URL. */
 export declare function buildLedgerView(ctx: Context, config: NonameConfig, exec?: unknown): Promise<LedgerViewResult>;

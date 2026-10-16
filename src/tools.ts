@@ -23,6 +23,36 @@ function text(value: unknown): { type: "text"; text: string }[] {
   return [{ type: "text", text: typeof value === "string" ? value : JSON.stringify(value, null, 2) }];
 }
 
+// Serialize curation checks within this host so two sessions opening the same
+// ledger do not both propose an identical memory. Kernel review still owns
+// durable revisions and concurrency across separate processes.
+const curationQueues = new Map<string, Promise<unknown>>();
+async function curate<T>(opts: NonameRunOptions, operation: () => Promise<T>): Promise<T> {
+  const key = opts.dbPath ?? opts.dbDir;
+  const previous = curationQueues.get(key) ?? Promise.resolve();
+  const pending = previous.catch(() => {}).then(operation);
+  curationQueues.set(key, pending);
+  try {
+    return await pending;
+  } finally {
+    if (curationQueues.get(key) === pending) curationQueues.delete(key);
+  }
+}
+
+interface MemoryRecord {
+  id: string;
+  layer: string;
+  logical_key: string;
+  content: unknown;
+}
+
+function sameMemory(left: unknown, right: Record<string, string>): boolean {
+  if (!left || typeof left !== "object" || Array.isArray(left)) return false;
+  const value = left as Record<string, unknown>;
+  return Object.keys(value).length === Object.keys(right).length &&
+    Object.keys(right).every((key) => value[key] === right[key]);
+}
+
 /**
  * Bridge options for one call: the ledger is resolved per call from the
  * calling session's workspace, so two sessions in two projects never share a
@@ -45,7 +75,11 @@ export function registerNonameTools(ctx: Context, config: NonameConfig): void {
     defineTool({
       name: "noname_record",
       description:
-        "Record an evidence event into the NoName ledger (append-only). Use for decisions, findings, constraints, or any work context that should survive across sessions.",
+        "Save one useful source event as evidence, not approved memory. " +
+        (config.autoIngest
+          ? "Ordinary tool results are captured automatically; do not duplicate them. "
+          : "Automatic tool-result capture is off; use noname_record to preserve selected useful evidence. ") +
+        "Do not record every conversation turn. Use for an explicit decision, correction, verified finding or recovery checkpoint. For durable memory, use noname_remember with this event's id.",
       parameters: {
         session: { type: "string", required: true, description: "Session id this event belongs to" },
         event_type: { type: "string", required: true, description: "Event type, e.g. user.message / decision / finding" },
@@ -68,7 +102,61 @@ export function registerNonameTools(ctx: Context, config: NonameConfig): void {
           ["event", "--session", args.session, "--type", args.event_type, "--payload", JSON.stringify({ text: args.text })],
           opts,
         );
-        return `recorded event ${r.id}`;
+        return `recorded event ${r.id}\nSaved as evidence only; no approved memory changed.`;
+      },
+    }),
+  );
+
+  ctx.tools.register(
+    defineTool({
+      name: "noname_remember",
+      description:
+        "Propose one concise, evidence-backed memory for human review. Use high for lasting constraints and mid for task progress/next steps. First inspect noname_state/inbox to avoid duplicates. Reuse the same stable key for a correction: approval replaces the prior current state while preserving its history. Never turn each conversation turn into memory; propose only information that will change future work. Taste/preferences require explicit human judgement.",
+      parameters: {
+        layer: { type: "string", required: true, description: "high (lasting project constraint) or mid (task state)" },
+        key: { type: "string", required: true, description: "Stable subject key, e.g. project.storage; reuse it for corrections" },
+        text: { type: "string", required: true, description: "One standalone sentence explaining the current decision or next step" },
+        source_event: { type: "string", required: true, description: "evt_ id containing the decision or correction; use noname_record/search" },
+        reason: { type: "string", required: true, description: "Why future work needs this memory or why it replaces earlier state" },
+        next_step: { type: "string", description: "Concrete next action for task state, when useful" },
+      },
+      output: { schema: { type: "string" }, render: (_a, v) => text(v) },
+      async execute(args, exec) {
+        if (args.layer !== "high" && args.layer !== "mid") {
+          throw new Error("noname_remember: layer must be high or mid");
+        }
+        for (const field of ["key", "text", "source_event", "reason"] as const) {
+          if (!args[field].trim()) throw new Error(`noname_remember: ${field} must not be empty`);
+        }
+        const opts = optsFor(ctx, config, exec);
+        return await curate(opts, async () => {
+          await ensureNonameInit(opts);
+          const key = args.key.trim();
+          const content: Record<string, string> = { text: args.text.trim(), reason: args.reason.trim() };
+          if (args.next_step?.trim()) content.next_step = args.next_step.trim();
+          const states = await runNoname<MemoryRecord[]>(["state", "--layer", args.layer], opts);
+          const proposals = await runNoname<MemoryRecord[]>(["proposals"], opts);
+          const current = states.find((record) => record.logical_key === key);
+          const pending = proposals.filter((record) => record.layer === args.layer && record.logical_key === key);
+          const latest = pending.at(-1);
+          if (latest && sameMemory(latest.content, content)) {
+            return `already_pending: Memory candidate ${latest.id} already contains this decision.\n` +
+              "No duplicate was created. Open noname_ledger for human review.";
+          }
+          if (!pending.length && current && sameMemory(current.content, content)) {
+            return `unchanged: Approved memory for ${key} already contains this decision. No candidate was created.`;
+          }
+          const proposal = await runNoname<{ id: string }>([
+            "propose", "--layer", args.layer, `--key=${key}`,
+            "--content", JSON.stringify(content),
+            `--source-event=${args.source_event}`, "--by", "dsh-agent", `--reason=${args.reason}`,
+          ], opts);
+          return `Memory candidate ${proposal.id} awaits human review.\n${args.text.trim()}\n` +
+            `Subject: ${key} (${args.layer}). Approved memory has not changed.\n` +
+            (current ? `On approval, this replaces current revision ${current.id}.\n` : "") +
+            (pending.length ? `${pending.length} earlier candidate(s) for this subject remain available for human review.\n` : "") +
+            "Open noname_ledger for review; reuse this subject key when the decision changes.";
+        });
       },
     }),
   );
@@ -77,7 +165,7 @@ export function registerNonameTools(ctx: Context, config: NonameConfig): void {
     defineTool({
       name: "noname_package",
       description:
-        "Assemble a NoName context package: the portable, model-agnostic view (canon + task state + evidence pointers + taste) for handing work to a new session or model. Use before context switches.",
+        "Recall a portable NoName context package at the start of work and before context switches. Approved canon/task state guides continuity; raw evidence is history, pending proposals are unapproved, and taste is a soft preference. None overrides current instructions. Surface only relevant decisions and next steps to the user, and honestly state when approved layers are empty.",
       parameters: {
         task: { type: "string", required: true, description: "The task to continue" },
         session: { type: "string", required: true, description: "Session id to assemble from" },
@@ -85,9 +173,11 @@ export function registerNonameTools(ctx: Context, config: NonameConfig): void {
       output: { schema: { type: "string" }, render: (_a, v) => text(v) },
       async execute(args, exec) {
         // `package` emits markdown, not JSON: raw mode.
+        const opts = optsFor(ctx, config, exec);
+        await ensureNonameInit(opts);
         return await runNoname<string>(
           ["package", "--task", args.task, "--session", args.session],
-          { ...optsFor(ctx, config, exec), raw: true },
+          { ...opts, raw: true },
         );
       },
     }),
@@ -109,11 +199,15 @@ export function registerNonameTools(ctx: Context, config: NonameConfig): void {
   ctx.tools.register(
     defineTool({
       name: "noname_state",
-      description: "Show the current approved canon (stable high-level memory) of the project: the constitution the model proposed and the human approved.",
-      parameters: {},
+      description: "Show approved project memory. Choose high for lasting constraints, mid for task progress, or omit layer for both. Check before proposing a new memory; corrections should reuse the existing logical_key.",
+      parameters: { layer: { type: "string", description: "high or mid; omitted returns both" } },
       output: { schema: { type: "string" }, render: (_a, v) => text(v) },
-      async execute(_args, exec) {
-        return JSON.stringify(await runNoname(["state", "--layer", "high"], optsFor(ctx, config, exec)));
+      async execute(args, exec) {
+        if (args.layer && args.layer !== "high" && args.layer !== "mid") {
+          throw new Error("noname_state: layer must be high or mid");
+        }
+        const cmd = args.layer ? ["state", "--layer", args.layer] : ["state"];
+        return JSON.stringify(await runNoname(cmd, optsFor(ctx, config, exec)));
       },
     }),
   );
@@ -134,7 +228,7 @@ export function registerNonameTools(ctx: Context, config: NonameConfig): void {
     defineTool({
       name: "noname_taste_add",
       description:
-        "Record an AUTHORED taste: the user's own stated attitude (highest authority, active immediately). Taste shapes ordering/expression but never rewrites facts or lowers verification standards.",
+        "Record an AUTHORED taste only when the user explicitly asks to save their stated preference. It is active immediately: do not infer consent from ordinary conversation. For inferred taste, use noname_taste_propose and wait for human review. Taste is a soft preference and never rewrites facts, overrides instructions or lowers verification standards.",
       parameters: {
         attitude: { type: "string", required: true, description: "The attitude, as a concrete statement" },
         example: { type: "string", description: "A concrete example of the attitude" },
@@ -185,16 +279,32 @@ export function registerNonameTools(ctx: Context, config: NonameConfig): void {
     defineTool({
       name: "noname_taste_review",
       description:
-        "Review a taste record's lifecycle: adopt (activate a candidate), edit (new version), pause, resume, or retire. Writes an immutable review record.",
+        "Apply an explicitly authorized human decision to a taste record: adopt, edit (requires content JSON), pause, resume or retire. Never invent human authorization or treat an inferred preference as consent. Writes a new immutable head; use its returned id for later actions.",
       parameters: {
         taste_id: { type: "string", required: true, description: "tst_ id of the taste record" },
         action: { type: "string", required: true, description: "adopt | edit | pause | resume | retire" },
         reviewer: { type: "string", required: true, description: "Reviewer id (the human)" },
+        content: { type: "string", description: "JSON object for edit, e.g. {\"attitude\":\"Prefer a minimal reproduction\"}" },
         reason: { type: "string", description: "Reason for the action" },
       },
       output: { schema: { type: "string" }, render: (_a, v) => text(v) },
       async execute(args, exec) {
+        if (args.action === "edit" && !args.content?.trim()) {
+          throw new Error("noname_taste_review: edit requires content JSON");
+        }
+        if (args.content && args.action !== "edit") {
+          throw new Error("noname_taste_review: content only applies to edit");
+        }
+        if (args.content) {
+          try {
+            const content = JSON.parse(args.content);
+            if (!content || typeof content !== "object" || Array.isArray(content)) throw new Error();
+          } catch {
+            throw new Error("noname_taste_review: content must be a JSON object");
+          }
+        }
         const cmd = ["taste-review", "--taste-id", args.taste_id, "--action", args.action, "--reviewer", args.reviewer];
+        if (args.content) cmd.push("--content", args.content);
         if (args.reason) cmd.push("--reason", args.reason);
         const r = await runNoname<{
           id: string;
@@ -232,7 +342,7 @@ export function registerNonameTools(ctx: Context, config: NonameConfig): void {
     defineTool({
       name: "noname_ledger",
       description:
-        "Render the NoName ledger as a five-view HTML report (review inbox / state / version evolution / causal map / timeline) and return its file path. Open the file to inspect why the project is the way it is. This is the ledger's form in DSH (no host-reachable sidebar seam exists).",
+        "Open the NoName ledger: current decisions and next steps, changes waiting for judgement, taste/preferences, decision history and the activity archive. Return its live URL for the human to inspect sources and review candidates with an identity and reason, plus a read-only offline snapshot. Approval is performed by the human in the browser.",
       parameters: {},
       output: { schema: { type: "string" }, render: (_a, v) => text(v) },
       async execute(_args, exec) {
@@ -242,7 +352,10 @@ export function registerNonameTools(ctx: Context, config: NonameConfig): void {
         // UTF-16 unit count understated the file by ~6% while the message said
         // "bytes".  A size the reader cannot trust is worse than no size.
         const bytes = Buffer.byteLength(view.html, "utf8");
-        return `ledger written to ${view.htmlPath} (${bytes} bytes; open it to view the five views)`;
+        const snapshot = view.htmlPath
+          ? `ledger written to ${view.htmlPath} (${bytes} bytes; offline snapshot)`
+          : `Offline snapshot unavailable: ${view.snapshotError ?? "export failed"}. Live review remains available.`;
+        return `live ledger: ${view.liveUrl}\nOpen this URL in a browser to review memory candidates. The local server stops after one hour without activity.\n${snapshot}`;
       },
     }),
   );
@@ -315,11 +428,18 @@ export function registerNonameTools(ctx: Context, config: NonameConfig): void {
     defineTool({
       name: "noname_extract",
       description:
-        "Run memory extraction over a session's events: surface durable memory candidates (never auto-confirmed -- a human reviews before anything becomes canon).",
-      parameters: { session: { type: "string", required: true, description: "Session id to extract from" } },
+        "Inspect possible memory in a session. Defaults to a preview without creating candidates. Prefer noname_remember for one concise, evidence-backed decision. Set create_candidates=true only when the user asks to collect candidates for review; never extract every session automatically or claim candidates are approved.",
+      parameters: {
+        session: { type: "string", required: true, description: "Session id to extract from" },
+        create_candidates: { type: "boolean", description: "Explicit opt-in to create review candidates (default false)" },
+      },
       output: { schema: { type: "string" }, render: (_a, v) => text(v) },
       async execute(args, exec) {
-        return JSON.stringify(await runNoname(["extract", "--session", args.session], optsFor(ctx, config, exec)));
+        const opts = optsFor(ctx, config, exec);
+        await ensureNonameInit(opts);
+        const cmd = ["extract", "--session", args.session];
+        if (!args.create_candidates) cmd.push("--no-proposals");
+        return JSON.stringify(await runNoname(cmd, opts));
       },
     }),
   );
@@ -327,6 +447,7 @@ export function registerNonameTools(ctx: Context, config: NonameConfig): void {
 
 export const NONAME_TOOL_NAMES = [
   "noname_record",
+  "noname_remember",
   "noname_package",
   "noname_search",
   "noname_state",

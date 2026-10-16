@@ -14,4 +14,4 @@
 import type { Context } from "@deepseek-ai/cordis";
 import type { NonameConfig } from "./config.js";
 export declare function registerNonameTools(ctx: Context, config: NonameConfig): void;
-export declare const NONAME_TOOL_NAMES: readonly ["noname_record", "noname_package", "noname_search", "noname_state", "noname_inbox", "noname_taste_add", "noname_taste_propose", "noname_taste_review", "noname_card_queue", "noname_ledger", "noname_verify", "noname_extract"];
+export declare const NONAME_TOOL_NAMES: readonly ["noname_record", "noname_remember", "noname_package", "noname_search", "noname_state", "noname_inbox", "noname_taste_add", "noname_taste_propose", "noname_taste_review", "noname_card_queue", "noname_ledger", "noname_verify", "noname_extract"];

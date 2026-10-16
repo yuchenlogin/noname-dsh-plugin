@@ -3,8 +3,9 @@
 The ledger is *not* a log viewer and never a new fact: everything it shows is
 derived from the append-only event stream, the review inbox, and the taste
 projection, and can be rebuilt at any time.  This module produces a
-self-contained, dependency-free, offline HTML page (open it by double-click)
-that answers the three questions the ledger exists for:
+self-contained, dependency-free HTML page.  Offline snapshots can be opened
+by double-click; the local server enables explicit, authenticated review.
+Both modes answer the three questions the ledger exists for:
 
 - **Timeline -- what happened?**  High-signal nodes by default; low-level
   noise is folded away but expandable.
@@ -21,12 +22,13 @@ value, and no giant stat panels.
 
 from __future__ import annotations
 
-import html
+import hashlib
 import json
+from dataclasses import asdict
 from typing import Any
 
-from .causal_map import build_causal_model, render_causal_html
-from .state_diff import build_state_diff_model, render_state_diff_html
+from .causal_map import build_causal_model
+from .state_diff import build_state_diff_model
 from .store import HarnessStore
 from .taste import TasteService
 from .taste_cards import TasteCardService
@@ -36,11 +38,12 @@ from .taste_cards import TasteCardService
 # a high-signal one): any new event type is visible by default, so the ledger
 # fails open toward showing things rather than silently hiding a future
 # high-signal event.  These are the types that describe machinery, not work.
-_LOW_SIGNAL_PREFIXES = ("loop.", "plugin.build_")
+_LOW_SIGNAL_PREFIXES = ("loop.", "plugin.build_", "codex.hook.")
 _LOW_SIGNAL_EXACT = {
     "file.read", "workspace.snapshot", "model.requested", "model.completed",
     "tool.requested", "tool.completed", "tool.registered", "tool.unregistered",
     "tool.shadowed", "test.passed", "test.completed", "context.assembled",
+    "codex.user", "codex.assistant", "dsh.tool.completed",
 }
 
 
@@ -67,9 +70,9 @@ def build_ledger_model(
 ) -> dict[str, Any]:
     """Assemble the ledger view-model from the store (a pure projection).
 
-    ``limit=None`` (the default) shows the full history; the page is static, so
-    there is no incremental-load reason to cap it.  When a limit *is* given the
-    model records that the timeline is truncated, so the page can say so
+    ``limit=None`` (the default) shows the full history; each render is a full
+    projection, so there is no incremental-load reason to cap it.  When a limit
+    *is* given the model records that the timeline is truncated, so the page can say so
     honestly instead of implying a complete history.
     """
 
@@ -98,11 +101,72 @@ def build_ledger_model(
 
     inbox = store.review_inbox()
     taste = TasteService(store)
+    cards = TasteCardService(store)
+    # The inbox's compact summary is useful for counts, but a signature needs
+    # the complete candidate, evidence, and replacement effect.  Keep the
+    # authoritative record separate from derived details so the optimistic
+    # review version hashes exactly the same object as the local server.
+    for section in ("canon_pending", "task_pending", "taste_pending", "card_pending"):
+        for item in inbox[section]:
+            related_taste = []
+            if item["kind"] == "state_proposal":
+                record = store.get_proposal(item["id"])
+                history = store.state_history(record["layer"], record["logical_key"])
+                replaces = history[-1:]  # the current head, including retired heads
+            elif item["kind"] == "taste_candidate":
+                record = taste.get(item["id"])
+                replaces = [taste.get(record["supersedes_id"])] if record["supersedes_id"] else []
+            else:
+                record = cards.get(item["id"])
+                related_taste = [
+                    {**taste.get(taste_id), "current_head": taste.current_head(taste_id)}
+                    for taste_id in record["taste_ids"]
+                ]
+                replaces = [cards.get(record["supersedes_id"])] if record["supersedes_id"] else []
+            source_ids = list(record.get("source_event_ids", []))
+            source_ids.extend(record.get("representative_evidence", []))
+            for related in related_taste:
+                source_ids.extend(related["source_event_ids"])
+                source_ids.extend(related["current_head"]["source_event_ids"])
+            sources = []
+            for source_id in dict.fromkeys(source_ids):
+                try:
+                    sources.append(asdict(store.get_event(source_id)))
+                except KeyError:
+                    # Card representative evidence can contain references
+                    # outside the event table; surface that fact explicitly.
+                    sources.append({"id": source_id, "unavailable": True})
+            item.update({
+                "record": record,
+                "expected_version": hashlib.sha256(json.dumps(
+                    record, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+                ).encode("utf-8")).hexdigest(),
+                "source_events": sources,
+                "replaces": replaces,
+                "related_taste": related_taste,
+            })
     active_taste = taste.active()
     state = {
         "high": store.active_state("high"),
         "mid": store.active_state("mid"),
     }
+    active_ids = {item["id"] for items in state.values() for item in items}
+    for section in ("canon_pending", "task_pending"):
+        for item in inbox[section]:
+            peers = [peer for peer in inbox[section] if peer["logical_key"] == item["logical_key"]]
+            item["same_topic_candidates"] = [peer["record"] for peer in peers if peer["id"] != item["id"]]
+            item["latest_for_topic"] = peers[-1]["id"] == item["id"]
+            item["replacement_is_current"] = bool(item["replaces"] and item["replaces"][0]["id"] in active_ids)
+    active_cards = cards.by_status("active")
+    # Reading the current state should also explain its source, even when that
+    # source is older than the activity window or belongs to another session.
+    for item in state["high"] + state["mid"] + active_taste:
+        item["source_events"] = []
+        for source_id in item.get("source_event_ids", []):
+            try:
+                item["source_events"].append(asdict(store.get_event(source_id)))
+            except KeyError:
+                item["source_events"].append({"id": source_id, "unavailable": True})
 
     causal = build_causal_model(store, session_id=session_id, limit=fetch_limit)
     state_diff = build_state_diff_model(store)
@@ -118,7 +182,7 @@ def build_ledger_model(
         "limit": limit,
         "inbox": inbox,
         "state": state,
-        "taste": {"active": active_taste},
+        "taste": {"active": active_taste, "cards": active_cards},
         "counts": {
             "events": len(timeline),
             "pending_total": inbox["counts"]["total"],
@@ -126,228 +190,257 @@ def build_ledger_model(
     }
 
 
-def render_ledger_html(model: dict[str, Any]) -> str:
-    """Render the ledger view-model as a self-contained offline HTML page."""
-
-    project = html.escape(model["project"]["name"])
-    inbox = model["inbox"]
-    counts = inbox["counts"]
-
-    def esc(value: Any) -> str:
-        return html.escape(json.dumps(value, ensure_ascii=False, sort_keys=True) if not isinstance(value, str) else value)
-
-    # Timeline nodes.  High-signal nodes are always shown; low-signal nodes are
-    # folded into a <details> group the user can expand (progressive disclosure,
-    # not deletion).  Attribute interpolations are escaped with quote=True.
-    def seq_label(node: dict[str, Any]) -> str:
-        # seq is per-session; in the all-sessions view a bare #seq would imply
-        # a global ordering that does not exist, so prefix the session.
-        if model["session_id"] is None:
-            return f'{html.escape(node["session_id"])}#{node["seq"]}'
-        return f'#{node["seq"]}'
-
-    timeline_rows = []
-    low_rows = []
-    for node in model["timeline"]:
-        payload_text = esc(node["payload"])
-        if len(payload_text) > 220:
-            payload_text = payload_text[:220] + "…"
-        row = (
-            f'<li class="node">'
-            f'<span class="seq">{seq_label(node)}</span>'
-            f'<span class="badge">{html.escape(node["group"], quote=True)}</span>'
-            f'<span class="etype">{html.escape(node["event_type"], quote=True)}</span>'
-            f'<span class="time">{html.escape(node["occurred_at"], quote=True)}</span>'
-            f'<div class="payload">{payload_text}</div>'
-            f"</li>"
-        )
-        if node["high_signal"]:
-            timeline_rows.append(row)
-        else:
-            low_rows.append(row)
-    if low_rows:
-        timeline_rows.append(
-            f'<li class="node low-fold"><details><summary>展开 {len(low_rows)} 条低层簿记事件'
-            f"</summary><ul>{''.join(low_rows)}</ul></details></li>"
-        )
-
-    # Inbox cards.
-    def inbox_section(title: str, items: list[dict[str, Any]], kind_label: str) -> str:
-        if not items:
-            return ""
-        rows = "".join(
-            f'<li class="inbox-item"><span class="badge review">{kind_label}</span>'
-            f'<strong>{esc(item.get("logical_key") or item.get("title") or item.get("id", ""))}</strong>'
-            f'<div class="payload">{esc(item.get("summary"))}</div>'
-            f'<div class="meta">影响：{html.escape(item.get("impact", ""))}</div>'
-            f"</li>"
-            for item in items
-        )
-        return f'<section class="inbox-section"><h3>{html.escape(title)}</h3><ul>{rows}</ul></section>'
-
-    inbox_html = (
-        inbox_section("法典候选", inbox["canon_pending"], "法典")
-        + inbox_section("任务态候选", inbox["task_pending"], "任务")
-        + inbox_section("品味候选", inbox["taste_pending"], "品味")
-        + inbox_section("品味卡候选", inbox["card_pending"], "卡片")
-    )
-    if not inbox_html:
-        inbox_html = '<p class="empty">收件箱是空的——没有等待你判断的事。</p>'
-    if model["session_id"] is not None:
-        inbox_html = (
-            '<p class="meta">收件箱与状态是全局视图，不受会话过滤影响；'
-            "只有时间线按会话过滤。</p>" + inbox_html
-        )
-
-    # State (canon + task state).
-    def state_section(title: str, items: list[dict[str, Any]]) -> str:
-        if not items:
-            return f'<section class="state-section"><h3>{html.escape(title)}</h3><p class="empty">暂无</p></section>'
-        rows = "".join(
-            f'<li><code>{html.escape(item["logical_key"])}</code>'
-            f'<div class="payload">{esc(item["content"])}</div>'
-            f'<div class="meta">来源事件 {len(item["source_event_ids"])} 个 · {html.escape(item.get("approved_by", ""))}</div>'
-            f"</li>"
-            for item in items
-        )
-        return f'<section class="state-section"><h3>{html.escape(title)}</h3><ul>{rows}</ul></section>'
-
-    state_html = state_section("法典 · 稳定状态", model["state"]["high"]) + state_section(
-        "任务态 · 当前工作", model["state"]["mid"]
-    )
-
-    # Taste.
-    taste_items = "".join(
-        f'<li><span class="badge {"authored" if t["track"]=="authored" else "adopted"}">'
-        f'{"自述" if t["track"]=="authored" else "采纳"}</span>'
-        f'<div class="payload">{esc(t["content"])}</div>'
-        f'<div class="meta">{html.escape(t["scope"])} 作用域</div>'
-        f"</li>"
-        for t in model["taste"]["active"]
-    ) or '<p class="empty">暂无活跃品味</p>'
-    taste_html = f'<section class="state-section"><h3>品味 · 软影响（非事实）</h3><ul>{taste_items}</ul></section>'
-
-    session_note = (
-        f'<span class="badge">session {html.escape(model["session_id"])}</span>'
-        if model["session_id"]
-        else '<span class="badge">全部会话</span>'
-    )
-
-    truncation_note = (
-        f' · <span class="trunc">仅显示最近 {model["limit"]} 条（历史被截断）</span>'
-        if model.get("truncated")
-        else ""
-    )
-    causal_html = render_causal_html(model["causal"])
-    state_diff_html = render_state_diff_html(model["state_diff"])
-    return _PAGE_TEMPLATE.format(
-        project=project,
-        session_note=session_note,
-        event_count=model["counts"]["events"],
-        folded=model["folded_low_signal"],
-        truncation_note=truncation_note,
-        pending_total=counts["total"],
-        inbox_html=inbox_html,
-        state_html=state_html,
-        taste_html=taste_html,
-        state_diff_html=state_diff_html,
-        causal_html=causal_html,
-        timeline_rows="".join(timeline_rows) or '<p class="empty">暂无高信号事件</p>',
-    )
+def render_ledger_html(model: dict[str, Any], *, review_context: dict[str, Any] | None = None) -> str:
+    """Render the shared human-facing page without changing persisted memory."""
+    from .ledger_page import render_page
+    return render_page(model, review_context, _REVIEW_SCRIPT)
 
 
-_PAGE_TEMPLATE = """<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>NoName 账本 · {project}</title>
-<style>
-:root{{--bg:#0b0d10;--bg-soft:#10131a;--fg:#f2efe9;--fg-dim:rgba(242,239,233,.72);--muted:#8a8f98;--accent:#e07a5f;--hairline:rgba(242,239,233,.1);--serif:"Songti SC","Noto Serif SC",Georgia,serif;--sans:-apple-system,"PingFang SC","Segoe UI",sans-serif;--mono:ui-monospace,Menlo,Consolas,monospace}}
-*{{margin:0;padding:0;box-sizing:border-box}}
-body{{background:var(--bg);color:var(--fg);font-family:var(--sans);-webkit-font-smoothing:antialiased;line-height:1.6}}
-.wrap{{max-width:860px;margin:0 auto;padding:48px 28px 96px}}
-header{{border-bottom:1px solid var(--hairline);padding-bottom:22px;margin-bottom:34px}}
-h1{{font-family:var(--serif);font-size:2rem;font-weight:700}}
-.sub{{color:var(--muted);font-size:.9rem;margin-top:8px;font-family:var(--mono)}}
-.badge{{display:inline-block;font-family:var(--mono);font-size:.68rem;letter-spacing:.06em;padding:2px 8px;border:1px solid var(--hairline);border-radius:99px;color:var(--muted);margin-right:6px}}
-.badge.review{{color:var(--accent);border-color:var(--accent)}}
-.badge.authored{{color:var(--accent);border-color:var(--accent)}}
-section{{margin-bottom:40px}}
-h2{{font-family:var(--serif);font-size:1.3rem;font-weight:600;margin-bottom:16px;padding-top:14px;border-top:1px solid var(--hairline)}}
-h3{{font-family:var(--serif);font-size:1.02rem;font-weight:600;margin-bottom:12px;color:var(--fg-dim)}}
-ul{{list-style:none}}
-.node{{padding:12px 4px;border-bottom:1px solid var(--hairline)}}
-.node .seq{{font-family:var(--mono);color:var(--muted);font-size:.75rem;margin-right:10px}}
-.node .etype{{font-family:var(--mono);font-size:.82rem;color:var(--fg)}}
-.node .time{{float:right;font-family:var(--mono);font-size:.72rem;color:var(--muted)}}
-.node .payload{{color:var(--fg-dim);font-size:.86rem;margin-top:6px;font-family:var(--mono);word-break:break-all;white-space:pre-wrap}}
-.inbox-section ul,.state-section ul{{display:flex;flex-direction:column;gap:10px}}
-.inbox-item,.state-section li{{background:var(--bg-soft);border:1px solid var(--hairline);border-radius:8px;padding:12px 14px}}
-.inbox-item{{border-left:2px solid var(--accent)}}
-.inbox-item strong{{font-size:.95rem}}
-.meta{{color:var(--muted);font-size:.76rem;margin-top:6px;font-family:var(--mono)}}
-.empty{{color:var(--muted);font-style:italic;padding:12px 0}}
-.low-fold details summary{{cursor:pointer;color:var(--muted);font-size:.85rem;font-family:var(--mono);padding:8px 0}}
-.low-fold details[open] summary{{color:var(--accent)}}
-.low-fold details ul{{margin-top:6px}}
-.trunc{{color:var(--accent)}}
-details summary::-webkit-details-marker{{color:var(--accent)}}
-.causal-list{{list-style:none}}
-.causal-node{{padding:6px 0;border-bottom:1px solid var(--hairline)}}
-.causal-node summary{{cursor:pointer;padding:6px 0}}
-.deps{{list-style:none;margin:8px 0 8px 24px;display:flex;flex-direction:column;gap:4px}}
-.dep{{font-size:.84rem;color:var(--fg-dim)}}
-.dep-role{{color:var(--accent);font-family:var(--mono);font-size:.72rem;margin-right:6px}}
-.dep-label{{font-family:var(--mono)}}
-.dep-detail{{color:var(--muted);font-size:.76rem;margin-left:8px}}
-.taste-note{{background:rgba(224,122,95,.06);border-left:2px solid var(--accent);padding:8px 12px;color:var(--fg-dim);font-size:.85rem;margin-bottom:14px}}
-.diff-list{{list-style:none}}
-.diff-group{{padding:6px 0;border-bottom:1px solid var(--hairline)}}
-.diff-group summary{{cursor:pointer;padding:6px 0}}
-.versions{{list-style:none;margin:8px 0 8px 24px;display:flex;flex-direction:column;gap:6px}}
-.version{{font-size:.85rem;padding:6px 10px;border-left:2px solid var(--hairline)}}
-.version.retired{{opacity:.55;border-left-color:var(--muted)}}
-.version.active{{border-left-color:var(--accent)}}
-.vnum{{font-family:var(--mono);color:var(--accent);margin-right:8px}}
-.vstatus{{font-family:var(--mono);font-size:.72rem;color:var(--muted);margin-right:8px}}
-.delta{{color:var(--muted);font-size:.78rem;margin-left:8px}}
-.delta.added{{color:var(--accent)}}
-.inbox-banner{{background:rgba(224,122,95,.08);border:1px solid rgba(224,122,95,.3);border-radius:8px;padding:12px 16px;margin-bottom:20px;color:var(--fg-dim);font-size:.9rem}}
-.inbox-banner strong{{color:var(--accent)}}
-</style>
-</head>
-<body>
-<div class="wrap">
-<header>
-<h1>NoName 账本 · {project}</h1>
-<div class="sub">{session_note} · {event_count} 事件 · {folded} 低层已折叠{truncation_note}</div>
-</header>
-
-<section>
-<h2>审核收件箱</h2>
-<div class="inbox-banner"><strong>{pending_total}</strong> 项等待你的判断——审核是签署，不是点按钮。</div>
-{inbox_html}
-</section>
-
-<section>
-<h2>状态 · 现在为何如此</h2>
-{state_html}
-{taste_html}
-</section>
-
-{state_diff_html}
-
-{causal_html}
-
-<section>
-<h2>时间线 · 发生了什么</h2>
-<ul>
-{timeline_rows}
-</ul>
-</section>
-
-</div>
-</body>
-</html>
-"""
+# Candidate data stays in escaped HTML attributes/text, never executable JS.
+_REVIEW_SCRIPT = """<script>
+(() => {
+  'use strict';
+  const token = document.body.dataset.reviewToken;
+  const storagePrefix = 'noname-ledger:' + token + ':';
+  const forms = Array.from(document.querySelectorAll('.review-form'));
+  let hasDraft = false;
+  function readStored(key) {
+    try { return sessionStorage.getItem(storagePrefix + key); } catch (_) { return null; }
+  }
+  function writeStored(key, value) {
+    try { sessionStorage.setItem(storagePrefix + key, value); } catch (_) {}
+  }
+  function removeStored(key) {
+    try { sessionStorage.removeItem(storagePrefix + key); } catch (_) {}
+  }
+  const notice = readStored('notice');
+  if (notice) {
+    document.getElementById('review-notice').textContent = notice;
+    removeStored('notice');
+  }
+  for (const form of forms) {
+    const draftKey = 'draft:' + form.dataset.kind + ':' + form.dataset.id;
+    const reviewer = form.elements.namedItem('reviewer_id');
+    const reason = form.elements.namedItem('reason');
+    const edit = form.elements.namedItem('edited_content');
+    const friendlyFields = Array.from(form.querySelectorAll('[data-edit-field]'));
+    const feedback = form.querySelector('.review-feedback');
+    const reload = form.querySelector('.reload-page');
+    const reconcile = form.querySelector('.reconcile-draft');
+    const discard = form.querySelector('.discard-draft');
+    const initialEdit = edit ? edit.value : null;
+    let busy = false;
+    let staleDraft = false;
+    let draftVersion = form.dataset.version;
+    let draftHead = form.dataset.expectedHeadId;
+    let draft = null;
+    try { draft = JSON.parse(readStored(draftKey)); } catch (_) {}
+    if (draft && typeof draft === 'object') {
+      hasDraft = true;
+      if (typeof draft.reviewer_id === 'string') reviewer.value = draft.reviewer_id;
+      if (typeof draft.reason === 'string') reason.value = draft.reason;
+      if (edit && typeof draft.edited_content === 'string') edit.value = draft.edited_content;
+      draftVersion = draft.expected_version;
+      draftHead = draft.expected_head_id;
+      if (draft.expected_version !== form.dataset.version ||
+          draft.expected_head_id !== form.dataset.expectedHeadId) {
+        feedback.textContent = '已恢复先前草稿，但候选或将被替代的状态已变化。请核对完整内容和当前版本后再签署。';
+        feedback.classList.add('error');
+        staleDraft = true;
+        reconcile.hidden = false;
+        discard.hidden = false;
+      }
+    } else {
+      reviewer.value = readStored('reviewer') || '';
+    }
+    function restoreFriendly() {
+      if (!edit || !friendlyFields.length) return;
+      try {
+        const content = JSON.parse(edit.value);
+        for (const field of friendlyFields) {
+          if (content && typeof content[field.dataset.editField] === 'string') {
+            field.value = content[field.dataset.editField];
+          }
+        }
+      } catch (_) {}
+    }
+    restoreFriendly();
+    function saveDraft() {
+      hasDraft = true;
+      writeStored(draftKey, JSON.stringify({
+        reviewer_id: reviewer.value, reason: reason.value,
+        edited_content: edit ? edit.value : null,
+        expected_version: draftVersion,
+        expected_head_id: draftHead,
+      }));
+    }
+    reconcile.addEventListener('click', () => {
+      draftVersion = form.dataset.version;
+      draftHead = form.dataset.expectedHeadId;
+      staleDraft = false;
+      reconcile.hidden = true;
+      discard.hidden = true;
+      feedback.textContent = '已确认草稿基于当前显示的候选与版本。可以继续签署。';
+      feedback.classList.remove('error');
+      saveDraft();
+    });
+    discard.addEventListener('click', () => {
+      reason.value = '';
+      if (edit) edit.value = initialEdit;
+      restoreFriendly();
+      draftVersion = form.dataset.version;
+      draftHead = form.dataset.expectedHeadId;
+      staleDraft = false;
+      reconcile.hidden = true;
+      discard.hidden = true;
+      feedback.textContent = '已丢弃旧草稿，恢复当前候选内容。';
+      feedback.classList.remove('error');
+      removeStored(draftKey);
+    });
+    form.addEventListener('input', (event) => {
+      if (edit && friendlyFields.includes(event.target)) {
+        try {
+          const content = JSON.parse(edit.value);
+          for (const field of friendlyFields) {
+            Object.defineProperty(content, field.dataset.editField, {
+              value: field.value, enumerable: true, configurable: true, writable: true,
+            });
+          }
+          edit.value = JSON.stringify(content, null, 2);
+        } catch (_) {
+          feedback.textContent = '完整结构 JSON 无效，请先在高级编辑中修正；草稿已保留。';
+          feedback.classList.add('error');
+        }
+      } else if (event.target === edit) {
+        restoreFriendly();
+      }
+      saveDraft();
+    });
+    reload.addEventListener('click', () => { saveDraft(); location.reload(); });
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      if (busy || !event.submitter) return;
+      if (staleDraft) {
+        feedback.textContent = '旧草稿所依据的版本已变化。请先核对最新内容，再明确继续使用草稿或丢弃草稿。';
+        feedback.classList.add('error');
+        reconcile.focus();
+        return;
+      }
+      const reviewerId = reviewer.value.trim();
+      if (!reviewerId) {
+        feedback.textContent = '请填写签署人，审核不会自动代你签署。';
+        feedback.classList.add('error');
+        reviewer.focus();
+        return;
+      }
+      const action = event.submitter.value;
+      const payload = {
+        kind: form.dataset.kind, id: form.dataset.id, action,
+        reviewer_id: reviewerId, reason: reason.value.trim(),
+        expected_version: form.dataset.version,
+      };
+      if (form.dataset.kind === 'state_proposal') {
+        payload.expected_head_id = form.dataset.expectedHeadId;
+      }
+      if (action === 'edit') {
+        try {
+          payload.edited_content = JSON.parse(edit.value);
+          if (payload.edited_content === null ||
+              (form.dataset.kind === 'taste_card_candidate' &&
+               (typeof payload.edited_content !== 'object' || Array.isArray(payload.edited_content)))) {
+            throw new Error('invalid content');
+          }
+        } catch (_) {
+          feedback.textContent = '内容 JSON 无效。卡片需要 JSON 对象，状态内容不能为 null；草稿已保留。';
+          feedback.classList.add('error');
+          edit.focus();
+          return;
+        }
+      }
+      saveDraft();
+      busy = true;
+      form.setAttribute('aria-busy', 'true');
+      const buttons = Array.from(form.querySelectorAll('button'));
+      buttons.forEach(button => { button.disabled = true; });
+      feedback.classList.remove('error');
+      feedback.textContent = '正在写入审核记录…';
+      reload.hidden = true;
+      try {
+        const response = await fetch(new URL('api/review', location.href), {
+          method: 'POST', headers: {
+            'Content-Type': 'application/json', 'X-NoName-Token': token,
+          }, body: JSON.stringify(payload), credentials: 'same-origin',
+        });
+        let result = {};
+        try { result = await response.json(); } catch (_) {}
+        if (!response.ok) {
+          const error = typeof result.error === 'string' ? result.error :
+            (result.error && result.error.message) || result.message || ('HTTP ' + response.status);
+          const conflict = response.status === 409;
+          feedback.textContent = (conflict ? '候选已变化或已被审核。' : '审核未完成。') +
+            ' ' + error + ' 草稿已保留；可刷新核对最新内容后重试。';
+          feedback.classList.add('error');
+          reload.hidden = false;
+          return;
+        }
+        removeStored(draftKey);
+        writeStored('reviewer', reviewerId);
+        const labels = {accept:'已确认并记住', adopt:'已采纳品味', reject:'已拒绝候选',
+          retire:'已退役候选', defer:'已暂缓，候选仍在收件箱',
+          edit:form.dataset.kind === 'taste_card_candidate' ? '修改已保存，卡片继续待审' : '修改已确认并记住'};
+        writeStored('notice', (labels[action] || '审核已写入账本') + ' · 签署人 ' + reviewerId + '。');
+        location.reload();
+      } catch (_) {
+        feedback.textContent = '连接失败，审核结果尚未确认。草稿已保留；刷新账本核对后再提交。';
+        feedback.classList.add('error');
+        reload.hidden = false;
+      } finally {
+        busy = false;
+        form.removeAttribute('aria-busy');
+        buttons.forEach(button => { button.disabled = false; });
+      }
+    });
+  }
+  const revision = document.body.dataset.ledgerRevision;
+  if (revision) {
+    const updateNotice = document.getElementById('live-updates');
+    const message = document.getElementById('updates-message');
+    const refresh = document.getElementById('refresh-ledger');
+    refresh.addEventListener('click', () => location.reload());
+    let stopped = false;
+    async function checkUpdates() {
+      if (stopped || document.visibilityState !== 'visible') return;
+      try {
+        const response = await fetch(new URL('api/updates', location.href), {
+          credentials:'same-origin', cache:'no-store', signal:AbortSignal.timeout(5000),
+        });
+        if (!response.ok) throw new Error('disconnected');
+        const result = await response.json();
+        if (typeof result.revision !== 'string' || result.revision === revision) return;
+        const current = document.querySelector('[data-panel]:not([hidden])');
+        const focused = document.activeElement;
+        const typing = focused && ['INPUT','TEXTAREA','SELECT'].includes(focused.tagName);
+        const searching = document.getElementById('ledger-search').value.trim();
+        const signing = forms.some(form => form.getAttribute('aria-busy') === 'true');
+        if (current && current.id === 'now' && !hasDraft && !typing && !searching &&
+            !current.querySelector('details[open]') && !signing) {
+          location.reload();
+          return;
+        }
+        message.textContent = '账本有新变化。你的阅读位置和审核草稿已保留。';
+        updateNotice.hidden = false;
+        refresh.hidden = false;
+      } catch (_) {
+        message.textContent = '暂时无法连接本地账本。当前内容与草稿仍在；可重新打开账本入口后查看最新变化。';
+        updateNotice.hidden = false;
+        refresh.hidden = false;
+      }
+    }
+    const timer = window.setInterval(checkUpdates, 15000);
+    window.addEventListener('pagehide', () => {stopped = true; clearInterval(timer);});
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') checkUpdates();
+    });
+  }
+})();
+</script>"""

@@ -1,0 +1,4 @@
+# A root package.json `files` directory includes descendants despite the root
+# .npmignore. This rule lives inside the shipped directory to exclude caches.
+**/__pycache__/
+**/*.py[cod]

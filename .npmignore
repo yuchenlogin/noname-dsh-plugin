@@ -1,0 +1,15 @@
+# Development-only kernel source; the published package runs the vendored snapshot.
+vendor/noname-harness/
+
+# Python bytecode caches must never enter the npm tarball.
+**/__pycache__/
+*.py[cod]
+
+# Repository and local development files.
+.git/
+.github/
+tests/
+scripts/
+coverage/
+*.tgz
+.noname/

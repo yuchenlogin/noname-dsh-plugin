@@ -247,6 +247,8 @@ class TasteCardService:
         reviewer_id: str,
         *,
         edited: dict[str, Any] | None = None,
+        expected_version: str | None = None,
+        reason: str | None = None,
     ) -> dict[str, Any] | list[dict[str, Any]]:
         """Review a card.  Confirmation and lifecycle are explicit, never silent.
 
@@ -295,10 +297,12 @@ class TasteCardService:
                     fields[key] = edited[key]
             # Re-run the same validation create_card applies -- an edit must not
             # be a way to sneak in an empty title/attitude or a bad image.
-            if not str(fields["title"]).strip():
-                raise ValueError("card title cannot be empty")
-            if not str(fields["attitude"]).strip():
-                raise ValueError("card attitude cannot be empty")
+            for key in ("title", "attitude"):
+                if not isinstance(fields[key], str) or not fields[key].strip():
+                    raise ValueError(f"card {key} must be a non-empty string")
+            for key in ("tensions", "influence"):
+                if fields[key] is not None and not isinstance(fields[key], str):
+                    raise ValueError(f"card {key} must be a string or null")
             if fields["image"] is not None:
                 self._validate_image(fields["image"])
 
@@ -306,6 +310,10 @@ class TasteCardService:
         now = _now()
         last_confirmed = now if confirm else row["last_confirmed_at"]
         with self.store.transaction() as connection:
+            if expected_version is not None:
+                from .ledger_review import check_review_version
+
+                check_review_version(self.get(card_id), expected_version)
             # Re-check under the write lock: the pre-transaction head check is a
             # fast path, but two concurrent reviewers could both pass it.  The
             # loser must see the head moved and abort rather than fork.
@@ -347,6 +355,7 @@ class TasteCardService:
                     "action": action,
                     "reviewer_id": reviewer_id,
                     "new_status": new_status,
+                    "reason": reason,
                 },
                 occurred_at=now,
             )
@@ -622,6 +631,15 @@ class TasteCardService:
         )
 
     def _project(self, row: Any) -> dict[str, Any]:
+        from .ledger_review import review_version
+
+        evidence_versions = {
+            taste_id: {
+                "record": review_version(self.taste.get(taste_id)),
+                "head": review_version(self.taste.current_head(taste_id)),
+            }
+            for taste_id in _decode(row["taste_ids_json"])
+        }
         return {
             "id": row["id"],
             "title": row["title"],
@@ -645,6 +663,7 @@ class TasteCardService:
             # no longer all current active heads is drifting from the taste
             # layer, and a reviewer should know before confirming "still me".
             "stale": self._is_stale(row),
+            "taste_versions": evidence_versions,
         }
 
     def _is_stale(self, row: Any) -> bool:

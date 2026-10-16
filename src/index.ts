@@ -52,18 +52,21 @@ export function apply(ctx: Context, config?: Config): void {
       });
       if (!ok) {
         console.warn(
-          "[noname-harness] kernel not reachable. Ensure python3 is installed " +
-            "and vendor/noname-harness is present (git submodule update --init).",
+          "[noname-harness] sidecar unavailable. Check the configured pythonPath " +
+            "(Python 3.10+) and bundled vendor/noname_harness_pkg directory. " +
+            "NoName tools will report the specific error when called.",
         );
       } else {
-        console.log(`[noname-harness] kernel ready (ledger: ${target.dbDir}): context is an asset.`);
+        console.log(
+          `[noname-harness] ready (ledger: ${target.dbDir}); ` +
+          `automatic evidence ${resolved.autoIngest ? "on" : "off"}. ` +
+          "Use noname_package to continue work; important memories await human review in noname_ledger.",
+        );
       }
     })();
     return () => {
-      // Unload: sidecar calls are short-lived (bounded by timeoutMs) and each
-      // bridge call already owns its process + abort path, so there is nothing
-      // to force-kill here.  (A previous AbortController pool was removed: it
-      // was never wired to any call -- claiming it aborted anything was a lie.)
+      // CLI calls own their timeout + abort path. Long-lived ledger servers
+      // register a separate Cordis cleanup effect in ui/ledger-server.ts.
     };
   });
 }

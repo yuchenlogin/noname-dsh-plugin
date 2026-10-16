@@ -107,6 +107,13 @@ def build_parser() -> argparse.ArgumentParser:
     ledger_html.add_argument("--out", required=True, help="output HTML file (inside the workspace)")
     ledger_html.add_argument("--overwrite", action="store_true")
 
+    ledger_serve = sub.add_parser("ledger-serve", parents=[_db_parent()], help="open a local ledger with human review actions")
+    ledger_serve.add_argument("--session")
+    ledger_serve.add_argument("--limit", type=int, default=200)
+    ledger_serve.add_argument("--port", type=int, default=0, help="loopback port (default: choose a free port)")
+    ledger_serve.add_argument("--idle-timeout", type=float, default=3600, help="stop after this many idle seconds")
+    ledger_serve.add_argument("--background", action="store_true", help="return the URL and run the server in the background")
+
     search = sub.add_parser("search", parents=[_db_parent()], help="search event/evidence text")
     search.add_argument("query")
     search.add_argument("--session")
@@ -226,6 +233,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "init":
             with HarnessStore(args.db) as store:
                 _print(store.initialize_project(args.root, args.name))
+            return 0
+
+        if args.command == "ledger-serve":
+            from .ledger_server import create_ledger_server, start_background_ledger
+            options = {"port": args.port, "session_id": args.session, "limit": args.limit,
+                       "idle_timeout": args.idle_timeout}
+            if args.background:
+                _print(start_background_ledger(args.db, **options))
+            else:
+                import os
+                with create_ledger_server(args.db, **options) as server:
+                    print(json.dumps({"url": server.url, "pid": os.getpid(),
+                                      "idle_timeout": server.idle_timeout}), flush=True)
+                    try:
+                        server.serve_forever(poll_interval=0.25)
+                    except KeyboardInterrupt:
+                        pass
             return 0
 
         with HarnessStore(args.db) as store:

@@ -17,6 +17,7 @@ import { registerNonameTools } from "../src/tools.js";
 import { drainIngests, registerIngestion } from "../src/ingest.js";
 import { runNoname } from "../src/kernel.js";
 import { buildLedgerView } from "../src/ui/ledger-view.js";
+import { stopLedgerServers } from "../src/ui/ledger-server.js";
 import { describeLedgerTarget, ledgerTarget, resolveWorkspace, sessionIdOf } from "../src/workspace.js";
 
 let root: string;
@@ -24,6 +25,7 @@ beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), "noname-scope-"));
 });
 afterEach(async () => {
+  await stopLedgerServers();
   await rm(root, { recursive: true, force: true });
 });
 

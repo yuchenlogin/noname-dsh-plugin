@@ -8,8 +8,8 @@
  * this plugin today, and claiming one would be a lie.
  *
  * The honest form of the ledger in DSH is therefore a TOOL: `noname_ledger`
- * returns the five-view HTML the kernel generates, which the model (and the
- * user, by saving it) can open.  This is verified to load and run on the real
+ * returns the kernel's loopback review URL and an offline HTML snapshot,
+ * which the user can open in a browser. This loads through the real
  * host.  Should DSH later expose a host-reachable panel seam, the same
  * buildLedgerView() output plugs straight into it.
  */

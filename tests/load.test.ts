@@ -35,7 +35,7 @@ afterEach(async () => {
 });
 
 describe("plugin surface", () => {
-  it("registers all eleven tools without touching undeclared services", () => {
+  it("registers every declared tool without touching undeclared services", () => {
     const tools = makeToolsService();
     // A ctx exposing ONLY `tools` (the declared inject).  If the plugin
     // reaches for anything else at registration time, this throws.

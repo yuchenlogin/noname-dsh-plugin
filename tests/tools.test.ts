@@ -10,7 +10,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NONAME_TOOL_NAMES, registerNonameTools } from "../src/tools.js";
+import { runNoname } from "../src/kernel.js";
 import { resolveConfig } from "../src/config.js";
+import { stopLedgerServers } from "../src/ui/ledger-server.js";
 
 interface RegisteredTool {
   name: string;
@@ -33,11 +35,12 @@ beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "noname-tools-"));
 });
 afterEach(async () => {
+  await stopLedgerServers();
   await rm(dir, { recursive: true, force: true });
 });
 
 describe("tool registration", () => {
-  it("registers exactly the twelve NoName tools", () => {
+  it("registers the declared NoName tools", () => {
     const { ctx, tools } = stubCtx();
     registerNonameTools(ctx, resolveConfig({ dbDir: dir }));
     expect(tools.map((t) => t.name).sort()).toEqual([...NONAME_TOOL_NAMES].sort());
@@ -48,6 +51,22 @@ describe("tool registration", () => {
     registerNonameTools(ctx, resolveConfig({ dbDir: dir }));
     for (const t of tools) {
       expect(t.description.length).toBeGreaterThan(10);
+    }
+  });
+
+  it("describes evidence capture according to the active autoIngest configuration", () => {
+    for (const autoIngest of [true, false]) {
+      const { ctx, tools } = stubCtx();
+      registerNonameTools(ctx, resolveConfig({ dbDir: dir, autoIngest }));
+      const description = tools.find((tool) => tool.name === "noname_record")!.description;
+      if (autoIngest) {
+        expect(description).toContain("tool results are captured automatically");
+        expect(description).not.toContain("capture is off");
+      } else {
+        expect(description).toContain("Automatic tool-result capture is off");
+        expect(description).toContain("preserve selected useful evidence");
+        expect(description).not.toContain("captured automatically");
+      }
     }
   });
 });
@@ -90,6 +109,104 @@ describe("tool execute (real kernel)", () => {
     registerNonameTools(ctx, resolveConfig({ dbDir: dir, pythonPath: "missing-python-xyz" }));
     const verify = tools.find((t) => t.name === "noname_verify")!;
     await expect(verify.execute({}, {})).rejects.toThrow();
+  });
+
+  it("can recall an untouched project and preview extraction without candidates", async () => {
+    const { ctx, tools } = stubCtx();
+    registerNonameTools(ctx, resolveConfig({ dbDir: dir }));
+    const get = (name: string) => tools.find((tool) => tool.name === name)!;
+    expect(String(await get("noname_package").execute({ task: "first visit", session: "fresh" }, {}))).toContain("pkg_");
+    const source = String(await get("noname_record").execute({
+      session: "fresh", event_type: "user.message", text: "We must use SQLite for durable persistence.",
+    }, {}));
+    expect(source).toContain("evidence only");
+    expect(String(await get("noname_extract").execute({ session: "fresh" }, {}))).toContain("scanned_events");
+    expect(await runNoname(["proposals"], { dbDir: dir })).toEqual([]);
+  });
+
+  it("remembers a concise candidate and replaces only the same key after human review", async () => {
+    const { ctx, tools } = stubCtx();
+    registerNonameTools(ctx, resolveConfig({ dbDir: dir }));
+    const get = (name: string) => tools.find((tool) => tool.name === name)!;
+    let previous: string | undefined;
+    for (const decision of ["Use SQLite.", "Use PostgreSQL."]) {
+      const recorded = String(await get("noname_record").execute({
+        session: "correction", event_type: "decision", text: decision,
+      }, {}));
+      const output = String(await get("noname_remember").execute({
+        layer: "high", key: "project.storage", text: decision,
+        source_event: recorded.match(/evt_[a-f0-9]+/)![0], reason: "The user corrected the storage choice.",
+      }, {}));
+      expect(output).toContain("awaits human review");
+      const before = JSON.parse(String(await get("noname_state").execute({}, {})));
+      expect(before.map((record: { content: { text: string } }) => record.content.text)).toEqual(previous ? [previous] : []);
+      await runNoname(["review", "--proposal-id", output.match(/prp_[a-f0-9]+/)![0], "--action", "accept", "--reviewer", "test-human"], { dbDir: dir });
+      previous = decision;
+    }
+    const current = JSON.parse(String(await get("noname_state").execute({}, {})));
+    expect(current).toHaveLength(1);
+    expect(current[0].content.text).toBe("Use PostgreSQL.");
+    expect(current[0].supersedes_id).toBeTruthy();
+    expect((await runNoname<{ ok: boolean }>(["verify"], { dbDir: dir })).ok).toBe(true);
+    await expect(get("noname_remember").execute({
+      layer: "high", key: "project.invalid", text: "Not grounded", source_event: "evt_missing", reason: "test",
+    }, {})).rejects.toThrow();
+    expect(await runNoname(["proposals"], { dbDir: dir })).toEqual([]);
+  });
+
+  it("can update an explicitly saved taste using its new head and rejects invalid edit content", async () => {
+    const { ctx, tools } = stubCtx();
+    registerNonameTools(ctx, resolveConfig({ dbDir: dir }));
+    const get = (name: string) => tools.find((tool) => tool.name === name)!;
+    const original = JSON.parse(String(await get("noname_taste_add").execute({ attitude: "Be concise" }, {})));
+    const output = String(await get("noname_taste_review").execute({
+      taste_id: original.id, action: "edit", reviewer: "test-human",
+      content: JSON.stringify({ attitude: "Be concise and preserve source links" }),
+    }, {}));
+    expect(output).toContain("Be concise and preserve source links");
+    const head = output.match(/head=(tst_[a-f0-9]+)/)![1];
+    expect(head).not.toBe(original.id);
+    for (const content of ["not-json", "[]", "null"]) {
+      await expect(get("noname_taste_review").execute({
+        taste_id: head, action: "edit", reviewer: "test-human", content,
+      }, {})).rejects.toThrow("JSON object");
+    }
+    await expect(get("noname_taste_review").execute({
+      taste_id: head, action: "edit", reviewer: "test-human",
+    }, {})).rejects.toThrow("requires content");
+  });
+});
+
+describe("selective curation", () => {
+  it("coalesces repeated proposals, retains changed pending content, and skips approved no-ops", async () => {
+    const { ctx, tools } = stubCtx();
+    registerNonameTools(ctx, resolveConfig({ dbDir: dir }));
+    const get = (name: string) => tools.find((tool) => tool.name === name)!;
+    const source = String(await get("noname_record").execute({
+      session: "steady", event_type: "decision", text: "Build the CLI first, then verify persistence.",
+    }, {})).match(/evt_[a-f0-9]+/)![0];
+    const args = {
+      layer: "mid", key: "task.cli", text: "Build the CLI first.",
+      source_event: source, reason: "The user chose the first milestone.", next_step: "Verify persistence.",
+    };
+    const [first, repeated] = await Promise.all([
+      get("noname_remember").execute(args, {}), get("noname_remember").execute(args, {}),
+    ]);
+    expect(String(first)).toContain("awaits human review");
+    expect(String(repeated)).toContain("already_pending");
+    const pending = await runNoname<{ id: string; content: unknown }[]>(["proposals"], { dbDir: dir });
+    expect(pending).toHaveLength(1);
+    expect(pending[0].content).toMatchObject({ text: args.text, reason: args.reason, next_step: args.next_step });
+    await runNoname(["review", "--proposal-id", pending[0].id, "--action", "accept", "--reviewer", "test-human"], { dbDir: dir });
+    expect(String(await get("noname_remember").execute(args, {}))).toContain("unchanged");
+    expect(await runNoname(["proposals"], { dbDir: dir })).toEqual([]);
+    const all = JSON.parse(String(await get("noname_state").execute({}, {})));
+    expect(all[0].layer).toBe("mid");
+    expect(JSON.parse(String(await get("noname_state").execute({ layer: "high" }, {})))).toEqual([]);
+    for (const next_step of ["Verify concurrency.", "Verify Windows paths."]) {
+      expect(String(await get("noname_remember").execute({ ...args, next_step }, {}))).toContain("awaits human review");
+    }
+    expect(await runNoname(["proposals"], { dbDir: dir })).toHaveLength(2);
   });
 });
 
@@ -173,6 +290,7 @@ conn.commit()
       {},
     );
     const out = String(await tool("noname_ledger").execute({}, {}));
+    expect(out).toMatch(/^live ledger: http:\/\/127\.0\.0\.1:\d+\/[^/]+\//);
     const path = out.match(/ledger written to (\S+) \(/)?.[1];
     const reported = Number(out.match(/\((\d+) bytes;/)?.[1]);
     expect(path).toBeTruthy();

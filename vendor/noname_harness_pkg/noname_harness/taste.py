@@ -128,6 +128,7 @@ class TasteService:
         *,
         edited_content: Any | None = None,
         reason: str | None = None,
+        expected_version: str | None = None,
     ) -> dict[str, Any]:
         """Apply a review action to a taste record, writing a new version.
 
@@ -178,6 +179,10 @@ class TasteService:
         review_id = _id("trv")
         reviewed_at = _now()
         with self.store.transaction() as connection:
+            if expected_version is not None:
+                from .ledger_review import check_review_version
+
+                check_review_version(self.get(taste_id), expected_version)
             # Re-check under the write lock.  The pre-transaction validation is
             # a fast path for clear errors, but two concurrent reviewers could
             # both pass it; BEGIN IMMEDIATE serialises them here, and the loser
@@ -296,6 +301,21 @@ class TasteService:
                 for review in reviews
             ],
         }
+
+    def current_head(self, taste_id: str) -> dict[str, Any]:
+        """Resolve the current evidence version, including paused/retired heads."""
+        self.get(taste_id)
+        seen = {taste_id}
+        current = taste_id
+        while True:
+            child = self.store.query_one(
+                "SELECT id FROM taste_records WHERE supersedes_id = ?", (current,))
+            if child is None:
+                return self.get(current)
+            current = child["id"]
+            if current in seen:
+                raise RuntimeError("taste lineage contains a cycle")
+            seen.add(current)
 
     def active(self, scope: str | None = None) -> list[dict[str, Any]]:
         """Return the current active taste projection, optionally by scope."""

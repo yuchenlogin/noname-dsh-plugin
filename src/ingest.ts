@@ -20,6 +20,14 @@ import { ensureNonameInit, runNoname } from "./kernel.js";
 import type { NonameConfig } from "./config.js";
 import { ledgerTarget, sessionIdOf } from "./workspace.js";
 
+// These tools inspect NoName's own projections. Recording their results again
+// creates a feedback loop (package -> evidence -> package) and can persist the
+// ledger's private review URL. Their existing kernel audit trail is sufficient.
+const READ_TOOLS = new Set([
+  "noname_package", "noname_search", "noname_state", "noname_inbox",
+  "noname_card_queue", "noname_ledger", "noname_verify", "noname_extract",
+]);
+
 /** Shape of the tool-result event payload we rely on (minimal, defensive). */
 interface ToolExec {
   name?: string;
@@ -100,6 +108,7 @@ export function registerIngestion(ctx: Context, config: NonameConfig): void {
   }
 
   ctx.on("tools/result", (exec: ToolExec, result: ToolResult) => {
+    if (READ_TOOLS.has(exec?.name ?? "")) return;
     const full = (result?.content ?? [])
       .map((b) => (b.type === "text" ? b.text ?? "" : ""))
       .join("");
@@ -107,7 +116,10 @@ export function registerIngestion(ctx: Context, config: NonameConfig): void {
     // KNOW it is truncated (NoName: compression may be lossy, presentation may
     // not lie).  The full output stays in the DSH transcript (the host of record).
     const truncated = full.length > 500;
-    const text = full.slice(0, 500) + (truncated ? " … [truncated, full in DSH transcript]" : "");
+    // Do not split an emoji/supplementary character at the UTF-16 boundary:
+    // an unpaired surrogate cannot be encoded into SQLite's UTF-8 evidence.
+    const cut = truncated && /[\uD800-\uDBFF]/.test(full[499]) && /[\uDC00-\uDFFF]/.test(full[500]) ? 499 : 500;
+    const text = full.slice(0, cut) + (truncated ? " … [truncated, full in DSH transcript]" : "");
     // A tool that produced nothing carries nothing.  Writing a row anyway would
     // spend a seq and a sidecar call on an event that can never be recalled --
     // and the kernel now refuses an empty event outright, so this would surface
@@ -115,10 +127,11 @@ export function registerIngestion(ctx: Context, config: NonameConfig): void {
     // is no content to lose.
     if (!text.trim()) return;
     const session = ingestSessionId(exec);
-    // Dedup key: the correlation id when present, else a content fingerprint
-    // scoped to the session so identical short outputs in different sessions
-    // do not collide (and identical ones in the same session do).
-    const key = exec?.callId ?? `${session}:${exec?.name}:${text.slice(0, 64)}`;
+    // Scope the host correlation ID to its session.
+    // Tool call IDs need only be unique within a session. Without a call ID,
+    // preserve independent results rather than guessing identity from a short
+    // text prefix (two long outputs often share the same opening line).
+    const key = exec?.callId ? `${session}:${exec.callId}` : `${session}:anonymous:${++anonymousCall}`;
     queue = queue.then(() =>
       ingest("dsh.tool.completed", session, key, `tool ${exec?.name ?? "?"} -> ${text}`),
     );
@@ -135,6 +148,7 @@ export function registerIngestion(ctx: Context, config: NonameConfig): void {
 }
 
 const pending = new Set<Promise<void>>();
+let anonymousCall = 0;
 
 /** Wait for every in-flight ingest to settle (used by tests). */
 export async function drainIngests(): Promise<void> {

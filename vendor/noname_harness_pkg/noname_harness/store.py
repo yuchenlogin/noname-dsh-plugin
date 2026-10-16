@@ -1120,6 +1120,7 @@ class HarnessStore:
             "event_type NOT LIKE 'tool.%'",
             "event_type NOT LIKE 'plugin.%'",
             "event_type NOT LIKE 'taste.%'",
+            "event_type NOT LIKE 'codex.hook.%'",
         ]
         args: list[Any] = []
         if not include_workspace_snapshots:
@@ -1988,6 +1989,8 @@ class HarnessStore:
         reason: str | None = None,
         valid_from: str | None = None,
         valid_to: str | None = None,
+        expected_version: str | None = None,
+        expected_head_id: str | None = None,
     ) -> dict[str, Any]:
         if action not in VALID_REVIEW_ACTIONS:
             raise ValueError(f"invalid review action: {action}")
@@ -2013,6 +2016,20 @@ class HarnessStore:
         supersedes_id: str | None = None
         revision_status: str | None = None
         with self._transaction() as connection:
+            if expected_version is not None:
+                from .ledger_review import check_review_version, StaleReviewError
+
+                current = self.get_proposal(proposal_id)
+                check_review_version(current, expected_version)
+                if current["reviews"] and current["reviews"][-1]["action"] != "defer":
+                    raise StaleReviewError("候选已完成审核，请刷新账本。")
+            if expected_head_id is not None:
+                from .ledger_review import StaleReviewError
+
+                history = self.state_history(proposal["layer"], proposal["logical_key"])
+                head_id = history[-1]["id"] if history else ""
+                if head_id != expected_head_id:
+                    raise StaleReviewError("同一条目的当前状态已改变，请刷新并核对将被替代的版本。")
             # Serialise concurrent reviewers under the write lock.  BEGIN
             # IMMEDIATE takes the write lock before this re-read, so a reviewer
             # always sees the latest committed decisions.  Repeating the *same*
