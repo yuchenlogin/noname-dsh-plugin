@@ -16,6 +16,7 @@ import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from socketserver import TCPServer
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -64,6 +65,12 @@ def ledger_revision(db_path: Path) -> str:
 
 
 class LedgerServer(ThreadingHTTPServer):
+    def server_bind(self) -> None:
+        # HTTPServer resolves getfqdn() before listen(). A numeric loopback
+        # endpoint needs no reverse DNS, which can stall on macOS runners.
+        TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
     def __init__(self, db_path: Path, port: int, session_id: str | None,
                  limit: int | None, idle_timeout: float):
         self.db_path = db_path

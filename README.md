@@ -121,7 +121,7 @@ npm run check:kernel
 
 运行时使用 `vendor/noname_harness_pkg/` 快照；`vendor/noname-harness` submodule 和 `KERNEL_VERSION.txt` 提供可追溯来源。正常体验改进应在插件或共享展示层完成，不复制内核审核规则。
 
-0.6.0 的基座固定为 [`ffede3a`](https://github.com/yuchenlogin/NoNameAgentHarness/commit/ffede3a5db443039109f77b3eb06ae6fa0a52616)。共享展示层已从该提交导出，submodule pin、`KERNEL_VERSION.txt` 与运行快照保持一致，`npm run check:kernel` 已通过。构建、66 项插件回归和独立安装验证也已通过。
+0.6.0 的基座固定为 [`a0673a9`](https://github.com/yuchenlogin/NoNameAgentHarness/commit/a0673a9d7181c030ba8c2de415451f3a4dbb6060)，包含 macOS 本地服务启动修复。共享展示层已从该提交导出，submodule pin、`KERNEL_VERSION.txt` 与运行快照保持一致，`npm run check:kernel` 已通过。构建、66 项插件回归和独立安装验证也已通过。
 
 需要主动升级基座时：
 
