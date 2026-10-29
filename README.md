@@ -126,26 +126,87 @@ ssh -L 45678:127.0.0.1:45678 your-host
 
 完整性校验按每行写入时的哈希版本验证。较新 v2 哈希覆盖整行溯源字段；旧 v1 仅覆盖 payload，不能发现所有元数据篡改。`noname_verify` 的 `hash_coverage` 如实报告覆盖范围。数据在本机，不表示它自动加密或替你脱敏。
 
-## 开发与内核快照
+## 两个仓库如何一起更新
 
-```sh
-npm run build
-npm test
-npm run check:kernel
-```
+[NoName Agent Harness](https://github.com/yuchenlogin/NoNameAgentHarness) 维护 Python 内核，包括记忆、证据、审核、共享账本展示和写作规则；本仓维护接入 DSH 的 TypeScript 插件，包括工具注册、工作区映射、配置和生成前注入。**插件固定使用内核的一个提交；内核主仓更新后，由维护者选择版本、同步、适配并发布插件。** 两个项目的版本号独立，完整提交 SHA 确定实际使用的内核。
 
-运行时使用 `vendor/noname_harness_pkg/` 快照；`vendor/noname-harness` submodule 和 `KERNEL_VERSION.txt` 提供可追溯来源。正常体验改进应在插件或共享展示层完成，不复制内核审核规则。
+### 固定版本与随包快照
 
-0.6.0 的基座固定为 [`a0673a9`](https://github.com/yuchenlogin/NoNameAgentHarness/commit/a0673a9d7181c030ba8c2de415451f3a4dbb6060)，包含 macOS 本地服务启动修复。共享展示层已从该提交导出，submodule pin、`KERNEL_VERSION.txt` 与运行快照保持一致，`npm run check:kernel` 已通过。构建、66 项插件回归和独立安装验证也已通过。
+| 位置 | 作用 |
+|---|---|
+| `vendor/noname-harness` | 指向内核仓的 Git submodule；插件提交记录它的固定 SHA，供同步与校验使用 |
+| `vendor/noname_harness_pkg/noname_harness` | 从该 SHA 导出的 Python 包；随插件分发，是正常运行时优先加载的内核 |
+| `vendor/noname_harness_pkg/KERNEL_VERSION.txt` | 同步脚本生成的完整 SHA 与源码链接，方便查看版本来源 |
+| `src/` → `dist/` | DSH 接入代码及构建产物；`dist/` 随插件分发并提交到仓库 |
 
-需要主动升级基座时：
+因此，只在独立的 NoName 主仓执行 `git pull`，已安装的 DSH 插件仍运行原有快照；只移动 submodule 的版本，也还需要重新导出快照。运行时在快照缺失时才回退到开发用 submodule。随包快照让 npm/git 安装即使没有初始化 submodule，也能取得内核。
 
-```sh
-npm run sync:kernel -- --commit <sha>
-npm test
-npm run check:kernel
-```
+之前已在 [`d0b89e1`](https://github.com/yuchenlogin/noname-dsh-plugin/commit/d0b89e1) 加入 `sync:kernel` 和 CI 一致性检查，随后在 [`0481777`](https://github.com/yuchenlogin/noname-dsh-plugin/commit/0481777) 明确测试职责：内核完整测试在主仓运行，插件仓测试实际分发快照与 DSH 接口。现有自动化负责选定版本后的导出与校验；目前没有由内核提交自动触发插件升级或适配的流水线。
 
-`--dry-run` 只预览；不带 `--commit` 时从 submodule 当前精确 HEAD 导出。不要手工混合多个提交的快照。发布前应让源码、快照和版本声明一致；内核测试在主仓运行，插件测试验证实际 Python CLI 与 TypeScript 的桥接。
+### 本次 0.7.0 更新了什么
+
+| 插件版本 | 固定内核 | 更新内容 |
+|---|---|---|
+| 0.6.0 | [`a0673a9`](https://github.com/yuchenlogin/NoNameAgentHarness/commit/a0673a9d7181c030ba8c2de415451f3a4dbb6060) | NoName 0.37.0 的记忆体验与本机账本服务修复 |
+| **0.7.0（当前）** | [`c95cae0`](https://github.com/yuchenlogin/NoNameAgentHarness/commit/c95cae017744efceb9677994b26fed930a1af3e4) | NoName 0.38.0 的共享写作规则，以及 DSH 的生成前注入适配 |
+
+本次先完成并推送内核，再把插件 submodule 和随包快照同步到 `c95cae017744efceb9677994b26fed930a1af3e4`。插件侧另外增加 `writingStyle` 配置、`systemPrompt.section()` 注册与对应宿主依赖，构建 `dist/`，更新插件版本到 0.7.0 后提交推送。写作规则保存在内核，DSH 负责把规则送入模型请求。
+
+按改动类型决定适配范围：
+
+| 内核或宿主变化 | 插件侧工作 |
+|---|---|
+| 内部修复，现有 CLI、返回格式和资源路径保持兼容 | 同步快照，构建并验证插件 |
+| 新增能力，或命令、参数、返回格式、资源路径发生变化 | 同步快照，同时修改相关工具、配置或注入代码，再验证 |
+| DSH 宿主服务接口或版本要求变化 | 检查并调整 TypeScript 接入与依赖声明，再用宿主接口验证 |
+
+### 维护者升级步骤
+
+1. 在 NoName 主仓完成内核改动、运行内核测试、提交并推送；记录目标提交的**完整 40 位 SHA**。发布用的提交应能从内核远端取得。
+2. 在插件仓同步目标内核。下面以本次版本为例，下次升级时替换 SHA：
+
+   ```sh
+   git submodule update --init vendor/noname-harness
+   npm ci
+   npm run sync:kernel -- --commit c95cae017744efceb9677994b26fed930a1af3e4
+   ```
+
+   脚本会 fetch 目标提交、让 submodule 固定到该提交，再通过 `git archive` 导出已提交的 `noname_harness/`。它会同步删除上游已移除的包文件，并重写 `KERNEL_VERSION.txt`；内核工作区尚未提交的修改不会进入快照。
+
+3. 根据上表完成插件接口适配；需要发布新版本时，同步更新 `package.json`、`package-lock.json` 和 `CHANGELOG.md`。随后运行：
+
+   ```sh
+   npm run build
+   npm test
+   npm run check:kernel
+   git diff --submodule=log
+   ```
+
+4. 将 **submodule 固定版本与整个快照一起提交**。本次涉及的 `src/`、`dist/`、版本文件和说明文档也应一并提交。仅同步内核时，可使用：
+
+   ```sh
+   git add vendor/noname-harness vendor/noname_harness_pkg
+   git diff --cached --submodule=log
+   git commit -m "chore: sync NoName kernel"
+   git push origin main
+   ```
+
+5. 检查插件仓 CI；使用者更新已安装的插件并重载 DSH 后，新的内核和接入代码一起生效。从本地源码使用插件时，拉取插件仓后运行 `npm ci`、`npm run build`，再让 DSH 加载更新后的插件。
+
+### 同步命令与检查结果
+
+| 命令或结果 | 含义 |
+|---|---|
+| `npm run sync:kernel -- --commit <完整 SHA>` | 获取并固定到明确提交，然后重新导出快照；发布时推荐这种方式 |
+| `npm run sync:kernel -- --commit main` | 获取执行时的上游 `main`，并固定到当时解析出的 SHA；以后更新仍需再次同步 |
+| `npm run sync:kernel` | 从 submodule 当前 HEAD 导出；不会主动选择上游最新版本 |
+| `npm run sync:kernel -- --dry-run` | 预览当前 submodule HEAD 与快照的内容差异；需先初始化 submodule，单独使用，不与 `--commit` 合用 |
+| `npm run check:kernel` | 校验版本记录、submodule 当前 HEAD 与快照内容；需已初始化 submodule |
+| `STALE` | 版本记录或快照不一致，检查失败，需修复后提交 |
+| `NOTE … upstream main is … ahead` | 上游有新提交；固定的旧版本仍可通过检查，由维护者决定何时升级 |
+
+`check:kernel` 在成功获取上游信息时报告版本落后；它不执行升级。检查通过也要把 submodule 变更加入提交，否则其他人检出仓库时仍会拿到旧的固定版本。
+
+插件 CI 在 Linux/macOS、Node.js 18/20、Python 3.10/3.12 共 8 种组合中运行快照检查、构建、插件回归与分发内核的导入检查。内核完整测试继续由 NoName 主仓负责。共享内核逻辑在主仓修改，再经同步脚本进入插件。
 
 产品初心见 [NoName 愿景](https://github.com/yuchenlogin/NoNameAgentHarness/blob/main/docs/vision.md)，版本变化见 [CHANGELOG](CHANGELOG.md)。本插件采用 [MIT](LICENSE)；内核遵守其原仓库许可。
