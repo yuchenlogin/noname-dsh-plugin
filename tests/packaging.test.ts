@@ -11,6 +11,8 @@ it("ships the usable sidecar and built tools without Python caches or local ledg
   const [packed] = JSON.parse(stdout) as { files: { path: string }[] }[];
   const paths = packed.files.map((entry) => entry.path);
   expect(paths).toContain("dist/tools.js");
+  expect(paths).toContain("dist/output-preferences.js");
+  expect(paths).toContain("vendor/noname_harness_pkg/noname_harness/policies/direct-writing.md");
   expect(paths).toContain("vendor/noname_harness_pkg/noname_harness/__init__.py");
   expect(paths.filter((path) => /(?:__pycache__|\.py[cod]$|harness\.db$|(?:^|\/)\.noname\/)/.test(path))).toEqual([]);
 }, 15_000);

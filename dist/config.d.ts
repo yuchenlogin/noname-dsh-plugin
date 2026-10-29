@@ -14,6 +14,8 @@ export declare const ledgerDirName = ".noname";
 /** Legacy per-user ledger location: used only when no workspace resolves. */
 export declare function defaultDbDir(): string;
 export interface NonameConfig {
+    /** Pre-generation output preference. `off` leaves prompt sections unchanged. */
+    writingStyle: "direct" | "off";
     /** Python interpreter used for the sidecar (default python3). */
     pythonPath: string;
     /**
@@ -27,11 +29,13 @@ export interface NonameConfig {
     timeoutMs: number;
 }
 export declare const Config: z<Schemastery.ObjectS<NoInfer<{
+    writingStyle: z<"direct" | "off", "direct" | "off", "defined">;
     pythonPath: z<string, string, "defined">;
     dbDir: z<string, string, "defined">;
     autoIngest: z<boolean, boolean, "defined">;
     timeoutMs: z<number, number, "defined">;
 }>>, Schemastery.ObjectT<NoInfer<{
+    writingStyle: z<"direct" | "off", "direct" | "off", "defined">;
     pythonPath: z<string, string, "defined">;
     dbDir: z<string, string, "defined">;
     autoIngest: z<boolean, boolean, "defined">;

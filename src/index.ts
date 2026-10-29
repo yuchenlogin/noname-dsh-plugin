@@ -18,17 +18,18 @@ import { registerIngestion } from "./ingest.js";
 import { registerLedgerTab } from "./ui/ledger-tab.js";
 import { pingKernel } from "./kernel.js";
 import { ledgerTarget } from "./workspace.js";
+import { registerOutputPreferences } from "./output-preferences.js";
 
 export const name = "noname-harness";
-// Declared dependencies: Cordis readies `tools` before apply; the sidebar
-// registry is optional (accessed defensively inside an effect, not injected,
-// so its absence never fails plugin load).
-export const inject = ["tools"];
+// Both services are supplied by the supported DSH host. The sidebar registry
+// remains optional; prompt delivery is an explicit dependency.
+export const inject = ["tools", "systemPrompt"];
 
 export interface Config extends Partial<NonameConfig> {}
 
 export function apply(ctx: Context, config?: Config): void {
   const resolved = resolveConfig(config);
+  registerOutputPreferences(ctx, resolved);
 
   // Register capabilities first so the plugin is useful even if the sidecar
   // is not yet reachable (a tool call then surfaces the bridge error).
@@ -60,6 +61,7 @@ export function apply(ctx: Context, config?: Config): void {
         console.log(
           `[noname-harness] ready (ledger: ${target.dbDir}); ` +
           `automatic evidence ${resolved.autoIngest ? "on" : "off"}. ` +
+          `writing style ${resolved.writingStyle}. ` +
           "Use noname_package to continue work; important memories await human review in noname_ledger.",
         );
       }

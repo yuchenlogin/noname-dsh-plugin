@@ -20,6 +20,7 @@ export function defaultDbDir() {
         : join(homedir(), ".dsh", "noname");
 }
 export const Config = z.object({
+    writingStyle: z.union([z.const("direct"), z.const("off")]).default("direct"),
     pythonPath: z.string().default("python3"),
     dbDir: z.string().default(""),
     autoIngest: z.boolean().default(true),
@@ -33,6 +34,7 @@ export const Config = z.object({
  */
 export function resolveConfig(partial) {
     const raw = {
+        writingStyle: partial?.writingStyle ?? "direct",
         pythonPath: partial?.pythonPath ?? "python3",
         dbDir: partial?.dbDir ?? "",
         autoIngest: partial?.autoIngest ?? true,

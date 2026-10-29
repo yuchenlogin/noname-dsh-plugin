@@ -4,11 +4,13 @@
 
 NoName 为 DSH 工作区带来可追溯的项目记忆：决定与理由、当前进度、经过确认的品味，以及能看懂、能审核的本地账本。项目沿用 [NoName Agent Harness](https://github.com/yuchenlogin/NoNameAgentHarness) 的记忆基座，以 TypeScript 插件连接本地 Python sidecar。
 
+**生成前写作偏好**默认开启：每次模型请求都带上结论先行、限定具体、保留关键证据的规则，减少重复免责和惯性转折。规则与 NoName 主仓共用，不依赖模型选择，也无需先调用记忆工具。
+
 正常工作时留下来路；重要阶段提出少量候选；你确认后，下一次上下文包带上当前版本。**工具结果留证，不等于长期记忆。**
 
 ## 快速开始
 
-需要 DeepSeek Harness、Node.js 18+ 与 Python 3.10+。Python 基座仅使用标准库与 SQLite，无需另配模型 API key。
+需要带 `@deepseek-ai/dsh-system-prompt` 0.2.0-rc.2 兼容接口的 DeepSeek Harness、Node.js 18+ 与 Python 3.10+。Python 基座仅使用标准库与 SQLite，无需另配模型 API key。
 
 ```sh
 git clone --recursive https://github.com/yuchenlogin/noname-dsh-plugin.git
@@ -31,6 +33,8 @@ dsh plugin --profile web add /absolute/path/to/noname-dsh-plugin
 记忆审核在本地网页由人签署。日常继续工作时，agent 可以按工具描述选择性地记录、提议和组装；插件没有后台 LLM 自动提炼服务，也不保证宿主会在每次会话开始时自动调用 `noname_package`。
 
 ## 哪些值得记住
+
+写作偏好在生成前由 `systemPrompt.section()` 自动加入；下文的项目记忆继续按证据与审核流程管理。
 
 | 内容 | 合适的去处 |
 |---|---|
@@ -76,10 +80,21 @@ ssh -L 45678:127.0.0.1:45678 your-host
 | `dbDir` | 空 | 默认使用会话所属工作区的 `<项目>/.noname`；指定后固定为该目录 |
 | `autoIngest` | `true` | 将宿主工具结果写入证据流；跳过 NoName 自身读取和投影工具，避免回声与审核 URL 留档 |
 | `timeoutMs` | `30000` | 每次 Python sidecar 调用超时，单位毫秒 |
+| `writingStyle` | `direct` | 生成前注入直接写作规则；设为 `off` 可关闭 |
 
 一个工作区一本账，多会话共享，通过真实 `session_id` 区分来源。路径由 DSH 的 `workspaceRegistry` 解析；无法获得工作区时回落到 `$DSH_HOME/noname`，不会猜测其他项目。HTML 放在工作区边界内的 `.noname/noname-ledger.html`。建议把 `.noname/` 加入 `.gitignore`。
 
 默认隔离单位是工作区路径，不能假设 profile 必然隔离：若不同 profile 指向同一个工作区，也可能使用同一账本。需要独立数据时显式配置不同 `dbDir`。
+
+### 写作偏好
+
+在 DSH 的 NoName 插件配置中设置 `writingStyle: direct` 或 `writingStyle: off`，由宿主保存配置并重载插件。该设置作用于插件所在的服务范围，独立于项目账本；`autoIngest: false` 不会关闭写作偏好。升级保留显式的 `off`，省略该字段时使用 `direct`。
+
+插件在加载时从内核快照读取 `noname_harness/policies/direct-writing.md`，注册具名 system prompt section；每次模型请求组装都使用它，卸载或重载时由 Cordis 撤销旧注册。切换模型、推理档位或工作区无需重设。生成结果原样返回，规则保留必要否定、统计不确定性、不利结果与当前用户指定格式。
+
+宿主显式使用 `complete` 全量系统提示时，会覆盖其他 sections，包括此规则。停用后新请求不再加入规则；新聊天可避开已有历史中的旧规则。服务接口变更由加载依赖与集成回归检查；文风效果需结合具体模型任务验证。
+
+共享规则、Codex 设置和独立原型迁移见 [NoName 写作偏好说明](https://github.com/yuchenlogin/NoNameAgentHarness/blob/main/docs/output-preferences.md)。插件使用固定内核快照，更新规则后运行 `npm run sync:kernel -- --commit <kernel-sha>`、构建并重载。
 
 ## 工具参考
 

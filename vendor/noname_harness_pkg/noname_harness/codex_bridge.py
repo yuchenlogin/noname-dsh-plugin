@@ -20,10 +20,14 @@ from typing import Any, Sequence
 from .cli import main as core_main
 from .context import render_markdown
 from .store import HarnessStore
+from .output_preferences import (
+    codex_writing_status, set_codex_writing_style, writing_policy,
+)
 
-BRIDGE_VERSION = "0.1.0"
+BRIDGE_VERSION = "0.2.0"
 HOOK_EVENTS = ("SessionStart", "UserPromptSubmit", "Stop")
 STARTUP_BYTE_LIMIT = 12000
+BRIDGE_ERRORS = (ValueError, TypeError, KeyError, OSError, RuntimeError, sqlite3.Error)
 
 
 @contextmanager
@@ -153,12 +157,22 @@ def emit(value: Any) -> None:
     print(json.dumps(value, ensure_ascii=False, indent=2))
 
 
+def writing_snapshot() -> tuple[dict[str, Any], str]:
+    """Keep preference errors from interrupting the independent memory path."""
+    try:
+        preferences = codex_writing_status()
+        return preferences, writing_policy(preferences["style"])
+    except BRIDGE_ERRORS as exc:
+        return {"style": None, "error": f"NoName writing preferences unavailable: {exc}"}, ""
+
+
 def status(root: Path, session: str | None = None) -> dict[str, Any]:
     path = ledger_path(root)
     result: dict[str, Any] = {
         "integration": "noname-codex", "bridge_version": BRIDGE_VERSION,
         "workspace_root": str(root), "database": str(path),
         "enabled": path.is_file(), "session_id": session,
+        "output_preferences": writing_snapshot()[0],
         "runtime": "Codex owns model and tool execution; NoName supplies memory",
     }
     if not path.is_file():
@@ -176,7 +190,8 @@ def status(root: Path, session: str | None = None) -> dict[str, Any]:
             {"event": row["event_type"], "session_id": row["session_id"],
              "at": row["occurred_at"], **{
                  key: json.loads(row["payload_json"]).get(key)
-                 for key in ("turn_id", "captured_text", "context_prepared", "package_id")}}
+                 for key in ("turn_id", "captured_text", "context_prepared", "package_id",
+                             "writing_style", "writing_policy_sha256", "writing_preference_error")}}
             for row in rows
         ]
         result["current_session_hooks_observed"] = sorted({
@@ -189,7 +204,7 @@ def status(root: Path, session: str | None = None) -> dict[str, Any]:
     return result
 
 
-def startup_context(package: dict[str, Any], root: Path, session: str) -> str:
+def startup_context(package: dict[str, Any], root: Path, session: str, *, output_policy: str = "") -> str:
     """Fit complete records in a byte budget; durable state precedes raw history."""
     binary = Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser() / "bin/noname-codex"
     preamble = (
@@ -205,6 +220,8 @@ def startup_context(package: dict[str, Any], root: Path, session: str) -> str:
         "version while preserving history. Never silently approve state or infer a confirmed taste "
         "from a single conversation. Mention memory only when it materially helps the work.\n"
     )
+    if output_policy:
+        preamble = output_policy + "\n\n" + preamble
     tracks = package["preference"]["tracks"]
     data: dict[str, Any] = {"package_id": package["package_id"],
         "layers": {"high": [], "mid": [], "low": []},
@@ -240,9 +257,31 @@ def hook(payload: dict[str, Any]) -> dict[str, Any] | None:
     cwd, session = payload.get("cwd"), payload.get("session_id")
     if not isinstance(cwd, str) or not isinstance(session, str) or not session.strip():
         raise ValueError("hook requires cwd and session_id")
-    root = workspace_root(Path(cwd))
+    preferences, policy = writing_snapshot() if event_name != "Stop" else ({}, "")
+    policy_output = {"hookSpecificOutput": {"hookEventName": event_name,
+                     "additionalContext": policy}} if policy else None
+    errors = [preferences["error"]] if preferences.get("error") else []
+    try:
+        root = workspace_root(Path(cwd))
+        output = memory_hook(payload, root, preferences, policy, policy_output)
+    except BRIDGE_ERRORS as exc:
+        errors.append(f"NoName capture unavailable: {exc}")
+        output = policy_output
+    if errors:
+        return {**(output or {}), "systemMessage": "\n".join(errors)}
+    return output
+
+
+def memory_hook(payload: dict[str, Any], root: Path, preferences: dict[str, Any],
+                policy: str, policy_output: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Capture only opted-in projects; errors leave the prepared policy usable."""
+    event_name, session = payload["hook_event_name"], payload["session_id"]
+    preference_receipt = ({"writing_style": preferences["style"],
+                           "writing_policy_sha256": preferences["policy_sha256"]}
+                          if preferences.get("style") else
+                          {"writing_preference_error": preferences["error"]} if preferences else {})
     if not ledger_path(root).is_file():
-        return None
+        return policy_output
     turn = payload.get("turn_id")
     text = payload.get("prompt") if event_name == "UserPromptSubmit" else payload.get("last_assistant_message")
     with open_store(root) as store:
@@ -257,7 +296,7 @@ def hook(payload: dict[str, Any]) -> dict[str, Any] | None:
                         (session, f"codex.hook.{event_name}", turn),
                     ).fetchone()
                     if previous:
-                        return {} if event_name == "Stop" else None
+                        return {} if event_name == "Stop" else policy_output
                 if isinstance(text, str) and text.strip():
                     store.record_event(connection, session,
                         "codex.user" if event_name == "UserPromptSubmit" else "codex.assistant",
@@ -265,17 +304,19 @@ def hook(payload: dict[str, Any]) -> dict[str, Any] | None:
                 store.record_event(connection, session, f"codex.hook.{event_name}", {
                     "bridge_version": BRIDGE_VERSION, "turn_id": turn,
                     "captured_text": bool(isinstance(text, str) and text.strip()),
+                    **preference_receipt,
                 })
         if event_name == "SessionStart":
             package = store.assemble_context_package("Resume Codex work", low_limit=5)
-            context = startup_context(package, root, session)
+            context = startup_context(package, root, session, output_policy=policy)
             store.append_event(session, "codex.hook.SessionStart", {
                 "bridge_version": BRIDGE_VERSION, "source": payload.get("source"),
                 "package_id": package["package_id"], "turn_id": turn,
                 "context_prepared": True,
+                **preference_receipt,
             })
             return {"hookSpecificOutput": {"hookEventName": event_name, "additionalContext": context}}
-    return {} if event_name == "Stop" else None
+    return {} if event_name == "Stop" else policy_output
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -283,6 +324,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--root", type=Path, help="explicit project root (default: current workspace)")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("init", help="enable NoName for this project")
+    writing = sub.add_parser("writing-style", help="show or set the global Codex writing default")
+    writing.add_argument("style", nargs="?", choices=["direct", "off"])
     check = sub.add_parser("status", help="show real ledger and hook observations")
     check.add_argument("--session")
     recall = sub.add_parser("recall", help="assemble and display project memory")
@@ -324,6 +367,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             if output is not None:
                 emit(output)
             return 0
+        if args.command == "writing-style":
+            if args.style:
+                set_codex_writing_style(args.style)
+            emit(codex_writing_status())
+            return 0
         root = args.root.expanduser().resolve(strict=True) if args.root else workspace_root(Path.cwd())
         path = ledger_path(root)
         if args.command == "init":
@@ -359,7 +407,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return core_main(["ledger-html", "--db", str(path), "--out",
                               str(root / ".noname/ledger.html"), "--overwrite"])
         return 0
-    except (ValueError, TypeError, KeyError, OSError, RuntimeError, sqlite3.Error) as exc:
+    except BRIDGE_ERRORS as exc:
         # Hook errors must surface as errors, never a misleading active receipt.
         # Exit 2 blocks UserPromptSubmit or continues Stop in Codex. This passive
         # sidecar must never use that control signal for capture failures.

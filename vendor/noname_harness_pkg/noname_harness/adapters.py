@@ -312,9 +312,13 @@ class AdapterDriver:
         tool_registry: Any = None,
         store: Any = None,
         session_id: str | None = None,
+        writing_style: str = "direct",
     ):
+        from .output_preferences import writing_policy
+
         self.adapter = adapter
         self.system_prompt = system_prompt
+        self.output_policy = writing_policy(writing_style)
         # Optional registry used to rehydrate approval token ids coming back
         # from the model into the exact ApprovalToken objects the gate honours.
         self.tool_registry = tool_registry
@@ -496,8 +500,9 @@ class AdapterDriver:
         self, context: dict[str, Any], last_tool_result: Any
     ) -> ModelRequest:
         messages: list[ModelMessage] = []
-        if self.system_prompt:
-            messages.append(ModelMessage(role="system", content=self.system_prompt))
+        system = "\n\n".join(part for part in (self.system_prompt, self.output_policy) if part)
+        if system:
+            messages.append(ModelMessage(role="system", content=system))
         # The assembled package is the brief for the model.  It carries the
         # facts the model needs to act: stable canon, current task state, the
         # recent evidence window (low), the workspace guardrails (so the model

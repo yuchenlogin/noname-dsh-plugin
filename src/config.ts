@@ -24,6 +24,8 @@ export function defaultDbDir(): string {
 }
 
 export interface NonameConfig {
+  /** Pre-generation output preference. `off` leaves prompt sections unchanged. */
+  writingStyle: "direct" | "off";
   /** Python interpreter used for the sidecar (default python3). */
   pythonPath: string;
   /**
@@ -38,6 +40,7 @@ export interface NonameConfig {
 }
 
 export const Config = z.object({
+  writingStyle: z.union([z.const("direct"), z.const("off")]).default("direct"),
   pythonPath: z.string().default("python3"),
   dbDir: z.string().default(""),
   autoIngest: z.boolean().default(true),
@@ -52,6 +55,7 @@ export const Config = z.object({
  */
 export function resolveConfig(partial?: Partial<NonameConfig>): NonameConfig {
   const raw = {
+    writingStyle: partial?.writingStyle ?? "direct",
     pythonPath: partial?.pythonPath ?? "python3",
     dbDir: partial?.dbDir ?? "",
     autoIngest: partial?.autoIngest ?? true,

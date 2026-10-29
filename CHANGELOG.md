@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.7.0] - 2026-10-29
+
+### Features
+
+- 默认启用生成前直接写作偏好；新增 `writingStyle: direct | off` 插件配置。
+- 通过 DSH `systemPrompt.section()` 在每次请求组装时提供共享规则，覆盖首轮与后续模型调用，无需模型主动调用工具。
+- 规则直接读取 NoName 0.38.0 的内核快照资源，Codex、原生 runtime 与 DSH 共用同一版本；新增真实 Cordis/SystemPrompt 的组装、停用、重载与宿主覆盖回归。
+
+### Design Rationale
+
+- 输出偏好作为 harness 配置进入模型输入；模型返回保持原样，项目证据和 taste 审核流程保持独立。
+- 声明 `systemPrompt` 服务及对应 peer dependency，由 Cordis 管理注册和清理；静态规则无需每次启动 Python。
+
+### Notes & Caveats
+
+- 需要 `@deepseek-ai/dsh-system-prompt` 0.2.0-rc.2 兼容接口；插件默认依赖 `tools` 与 `systemPrompt`。
+- 省略配置默认 `direct`，设为 `off` 可停用。宿主 `complete` 全量提示覆盖其他 sections；停用后新聊天可清除旧历史中的规则。
+- 固定的内核 SHA 见 `vendor/noname_harness_pkg/KERNEL_VERSION.txt`；快照由 `sync:kernel` 导出并校验，未对模型输出做后处理。
+
 ## [0.6.0] - 2026-10-16
 
 ### Features
